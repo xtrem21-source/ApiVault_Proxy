@@ -1,0 +1,1738 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ApiVault_Proxy</title>
+<style>
+  :root {
+    --fond: #0b0f14;
+    --carte: #111923;
+    --carte2: #0e151d;
+    --bord: #1e2a36;
+    --texte: #e6edf3;
+    --doux: #8b99a8;
+    --accent: #3b82f6;
+    --ok: #22c55e;
+    --err: #ef4444;
+    --warn: #f59e0b;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: radial-gradient(1200px 600px at 20% -10%, #16233a 0%, var(--fond) 55%);
+    color: var(--texte);
+    font: 14px/1.5 system-ui, "Segoe UI", sans-serif;
+    padding: 18px;
+  }
+  /* Bandeau fixe : nom + etat + modele par defaut restent visibles. */
+  .barre-fixe {
+    position: sticky;
+    top: -18px;
+    z-index: 50;
+    margin: -18px -18px 12px;
+    padding: 18px 18px 10px;
+    background: rgba(11, 15, 20, .94);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--bord);
+    box-shadow: 0 10px 24px rgba(0, 0, 0, .25);
+  }
+  .barre-fixe .tete { margin-bottom: 8px; }
+  .barre-fixe #bandeau-modele { margin-bottom: 0; }
+  .tete { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+  .gauche { display: flex; align-items: center; gap: 12px; }
+  .titre { font-size: 18px; font-weight: 650; letter-spacing: .2px; }
+  .sous { color: var(--doux); font-size: 12px; margin-top: 2px; }
+  .etat { display: flex; align-items: center; gap: 9px; font-weight: 600; font-size: 13px; padding-top: 4px; }
+  .pastille { width: 10px; height: 10px; border-radius: 50%; background: var(--doux); box-shadow: 0 0 0 4px rgba(139,153,168,.12); }
+  .pastille.actif { background: var(--ok); box-shadow: 0 0 0 4px rgba(34,197,94,.15); }
+  .pastille.erreur { background: var(--err); box-shadow: 0 0 0 4px rgba(239,68,68,.15); }
+
+  .bandeau {
+    display: flex; align-items: flex-start; gap: 10px;
+    margin-bottom: 12px; padding: 10px 14px;
+    border: 1px dashed #33465a; border-radius: 12px;
+    background: rgba(17,25,35,.55);
+    transition: background .2s ease, border-color .2s ease;
+  }
+  .bandeau .point { margin-top: 6px; }
+  .bandeau-texte { min-width: 0; flex: 1; }
+  .bandeau-ligne { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .bandeau .bandeau-cle {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .12em;
+    color: var(--doux); font-weight: 700; white-space: nowrap;
+  }
+  .bandeau .bandeau-valeur {
+    font-family: Consolas, "Cascadia Mono", monospace;
+    font-size: 13px; color: #cdd9e5; word-break: break-all;
+  }
+  .bandeau-detail { font-size: 11px; color: var(--doux); margin-top: 3px; }
+  .bandeau-detail .fournisseur-ok { color: #8ce3a8; }
+  .bandeau-detail .fournisseur-ko { color: #ffc3c3; }
+  .bandeau-detail .separateur { color: #3d5165; padding: 0 1px; }
+  .bandeau.actif {
+    border: 1px solid rgba(34,197,94,.55);
+    background: rgba(34,197,94,.10);
+    box-shadow: 0 0 18px rgba(34,197,94,.08) inset;
+  }
+  .bandeau.actif .bandeau-cle { color: #8ce3a8; }
+  .bandeau.actif .bandeau-valeur { color: #b9f5cf; font-weight: 700; }
+  .bandeau .point { width: 8px; height: 8px; border-radius: 50%; background: var(--doux); flex: none; }
+  .bandeau.actif .point { background: var(--ok); box-shadow: 0 0 0 4px rgba(34,197,94,.15); }
+
+  .grille { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .carte {
+    background: linear-gradient(180deg, var(--carte), var(--carte2));
+    border: 1px solid var(--bord);
+    border-radius: 12px;
+    padding: 14px;
+  }
+  .carte h2 {
+    margin: 0 0 10px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .12em;
+    color: var(--doux);
+    font-weight: 700;
+  }
+  .entete-carte { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+  .entete-carte h2 { margin: 0; }
+  tr.groupe td { padding: 14px 6px 4px; border-top: none; font-family: Consolas, "Cascadia Mono", monospace; font-weight: 700; font-size: 12px; color: var(--accent); }
+  tr.groupe:first-child td { padding-top: 4px; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; border: 1px solid transparent; white-space: nowrap; }
+  .badge.sain { color: #b9f5cf; background: rgba(34,197,94,.14); border-color: rgba(34,197,94,.35); }
+  .badge.inconnu { color: #cfd8e3; background: rgba(139,153,168,.14); border-color: rgba(139,153,168,.3); }
+  .badge.en_pause { color: #ffe0b0; background: rgba(245,158,11,.14); border-color: rgba(245,158,11,.35); }
+  .badge.en_panne { color: #ffc3c3; background: rgba(239,68,68,.14); border-color: rgba(239,68,68,.35); }
+  .badge.epuise { color: #e2ccff; background: rgba(168,85,247,.14); border-color: rgba(168,85,247,.35); }
+  @keyframes respiration { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+  @keyframes tourner { to { transform: rotate(360deg); } }
+  .pastille.attente { background: var(--accent); box-shadow: 0 0 0 4px rgba(59,130,246,.15); animation: respiration 1.1s ease-in-out infinite; }
+  .pastille.alerte { background: var(--warn); box-shadow: 0 0 0 4px rgba(245,158,11,.15); }
+  .icone { vertical-align: -2px; margin-right: 5px; }
+  button.occupe .icone { animation: tourner .9s linear infinite; }
+  .ligne { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 5px 0; }
+  .ligne + .ligne { border-top: 1px dashed rgba(30,42,54,.9); }
+  .cle { color: var(--doux); font-size: 12px; }
+  .valeur { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; text-align: right; word-break: break-all; }
+  .rangee { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  button {
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 8px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--bord);
+    background: #16202c;
+    color: var(--texte);
+    cursor: pointer;
+    transition: transform .08s ease, background .15s ease, border-color .15s ease;
+  }
+  button:hover:not(:disabled) { background: #1b2836; border-color: #2b3d4f; }
+  button:active:not(:disabled) { transform: translateY(1px); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.principal { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.principal:hover:not(:disabled) { background: #2f74e6; border-color: #2f74e6; }
+  button.danger { color: #ffb4b4; border-color: #4a2224; background: #241416; }
+  button.mini { padding: 4px 9px; font-size: 11px; font-weight: 600; }
+  button.mini.danger-fort { color: #ffd7d7; border-color: #a93646; background: #4a1620; }
+  button.mini.danger-fort:hover { border-color: #d24a5d; }
+  input, textarea {
+    flex: 1; min-width: 0;
+    font-family: Consolas, "Cascadia Mono", monospace;
+    font-size: 12px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--bord);
+    background: #0a1118;
+    color: var(--texte);
+    outline: none;
+  }
+  textarea { width: 100%; resize: vertical; line-height: 1.5; }
+  input:focus, textarea:focus { border-color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { text-align: left; color: var(--doux); font-weight: 600; font-size: 11px; padding: 4px 6px; }
+  td { padding: 6px; border-top: 1px solid rgba(30,42,54,.9); vertical-align: top; }
+  td.mono { font-family: Consolas, "Cascadia Mono", monospace; color: #c9d6e4; }
+  .jeton-alias { color: var(--accent); font-weight: 700; font-family: Consolas, monospace; }
+  .cible { color: var(--doux); }
+  tr.ligne-cible { cursor: pointer; }
+  tr.ligne-cible:hover td { background: rgba(59, 130, 246, .06); }
+  tr.ligne-cible:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  tr.ligne-cible.selected td { background: rgba(67, 209, 122, .08); }
+  tr.ligne-cible.selected td:first-child { box-shadow: inset 3px 0 0 var(--ok); }
+  .etoile { display: inline-block; width: 13px; margin-right: 5px; color: #41556a; font-size: 13px; }
+  tr.ligne-cible.selected .etoile { color: var(--ok); }
+  .alerte {
+    display: none;
+    margin-top: 12px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid #5a2a2a;
+    background: #2a1517;
+    color: #ffc9c9;
+    font-size: 12px;
+  }
+  .alerte.visible { display: block; }
+  pre.journal {
+    margin: 0;
+    height: 148px;
+    overflow: auto;
+    background: #080d12;
+    border: 1px solid var(--bord);
+    border-radius: 8px;
+    padding: 10px;
+    font-family: Consolas, "Cascadia Mono", monospace;
+    font-size: 11px;
+    line-height: 1.55;
+    color: #a9b8c8;
+    white-space: pre-wrap;
+  }
+  .pied { margin-top: 12px; color: var(--doux); font-size: 11px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .astuce { color: var(--doux); font-size: 11px; margin-top: 8px; }
+  .bascule {
+    display: flex; align-items: center; gap: 9px;
+    margin-top: 12px; padding: 9px 11px;
+    border: 1px solid var(--bord); border-radius: 9px;
+    background: #101822; cursor: pointer; font-size: 12px; font-weight: 600;
+  }
+  .bascule:hover { border-color: #2b3d4f; background: #131d28; }
+  .bascule input { flex: none; width: 15px; height: 15px; padding: 0; margin: 0; accent-color: var(--accent); }
+  .bascule.en_cours { opacity: .55; pointer-events: none; }
+  .bascule.desactivee { opacity: .55; cursor: not-allowed; }
+  .bascule.desactivee input { cursor: not-allowed; }
+  .badge-bientot {
+    margin-left: auto; font-size: 10px; font-weight: 700; letter-spacing: .3px;
+    text-transform: uppercase; color: #c7a8ff; background: #221935;
+    border: 1px solid #3d2b5c; border-radius: 999px; padding: 2px 7px;
+  }
+  .modeles-fournisseur { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+  .puce-modele {
+    font-family: Consolas, "Cascadia Mono", monospace;
+    font-size: 10.5px; padding: 3px 7px; border-radius: 999px;
+    border: 1px solid #2a3a4b; background: #101a24; color: #b9c7d6;
+  }
+  .puce-modele.gratuit { border-color: #1d5c3c; background: #0d2419; color: #7ee2a8; }
+  .puce-modele.payant { border-color: #5a4a1d; background: #241f0d; color: #e2cf7e; }
+  code { font-family: Consolas, monospace; color: #cfe0f2; background: #0a1118; padding: 1px 5px; border-radius: 4px; }
+
+  .bouton-langue {
+    width: 38px; height: 30px; padding: 0;
+    font-size: 11px; font-weight: 800; letter-spacing: .06em;
+    border-radius: 8px; flex: none;
+  }
+
+  .voile {
+    display: none;
+    position: fixed; inset: 0; z-index: 50;
+    background: rgba(4,8,12,.74);
+    backdrop-filter: blur(2px);
+    padding: 24px;
+    overflow: auto;
+  }
+  .voile.visible { display: flex; align-items: flex-start; justify-content: center; }
+  .panneau {
+    width: min(720px, 100%);
+    background: linear-gradient(180deg, #121b26, #0c131b);
+    border: 1px solid #26384a;
+    border-radius: 14px;
+    padding: 18px;
+    box-shadow: 0 24px 60px rgba(0,0,0,.55);
+    margin: auto;
+  }
+  .entete-panneau { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+  .titre-panneau { font-size: 16px; font-weight: 700; }
+  .fournisseur {
+    border: 1px solid var(--bord);
+    border-radius: 10px;
+    background: rgba(10,17,24,.65);
+    padding: 12px;
+    margin-top: 12px;
+  }
+  .fournisseur-tete { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+  .fournisseur-nom { font-family: Consolas, monospace; font-weight: 700; color: var(--accent); font-size: 13px; }
+  .fournisseur-cle { color: var(--doux); font-family: Consolas, monospace; font-size: 11px; word-break: break-all; text-align: right; }
+  .etiquette { display: block; color: var(--doux); font-size: 10px; text-transform: uppercase; letter-spacing: .09em; font-weight: 700; margin: 10px 0 5px; }
+  .message-mini { font-size: 11px; margin-top: 6px; min-height: 16px; }
+  .message-mini.ok { color: #8ce3a8; }
+  .message-mini.err { color: #ffb4b4; }
+  .message-mini.limite { color: #e2b341; }
+  .resultat { font-size: 11px; margin-top: 6px; color: var(--doux); }
+  .resultat.ok { color: #8ce3a8; }
+  .resultat.err { color: #ffb4b4; }
+  .resultat.limite { color: #e2b341; }
+  .adresses { display: flex; flex-direction: column; gap: 6px; }
+  .adresse-ligne { display: flex; align-items: center; gap: 8px; }
+  .adresse-ligne input[type="radio"] { flex: none; width: 15px; height: 15px; margin: 0; accent-color: var(--ok); cursor: pointer; }
+  .adresse-ligne input[type="text"] { flex: 1; }
+  .adresse-ligne button { flex: none; padding: 4px 8px; }
+  .adresse-ligne.par-defaut input[type="text"] { border-color: rgba(34,197,94,.45); }
+
+  /* Infobulle permanente (remplace le title natif). */
+  #infobulle {
+    position: fixed;
+    z-index: 1000;
+    max-width: min(340px, calc(100vw - 16px));
+    padding: 7px 10px;
+    border-radius: 8px;
+    border: 1px solid #31465c;
+    background: #15202c;
+    color: #e7eef7;
+    font-size: 11.5px;
+    line-height: 1.35;
+    font-weight: 400;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+    pointer-events: none;
+    white-space: normal;
+  }
+  #infobulle[hidden] { display: none; }
+
+  @media (max-width: 700px) {
+    .grille { grid-template-columns: 1fr; }
+    .tete { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+  <div class="barre-fixe">
+  <div class="tete">
+    <div class="gauche">
+      <button id="btn-langue" class="bouton-langue" data-tip="tip_langue">EN</button>
+      <div>
+        <div class="titre">ApiVault_Proxy</div>
+        <div class="sous" data-i18n="sous_titre">Passerelle locale compatible OpenAI</div>
+      </div>
+    </div>
+    <div class="etat" data-tip="tip_etat">
+      <span id="pastille" class="pastille"></span>
+      <span id="etat-texte">Connexion…</span>
+    </div>
+  </div>
+
+  <div id="bandeau-modele" class="bandeau" data-tip="tip_bandeau">
+    <span class="point"></span>
+    <div class="bandeau-texte">
+      <div class="bandeau-ligne">
+        <span class="bandeau-cle" data-i18n="modele_charge">Modèle chargé</span>
+        <span class="bandeau-valeur" id="modele-valeur">—</span>
+      </div>
+      <div class="bandeau-detail" id="bandeau-detail">—</div>
+    </div>
+  </div>
+  </div>
+
+  <div class="grille">
+    <section class="carte">
+      <h2 data-i18n="service">Service</h2>
+      <div class="ligne" data-tip="tip_adresse"><span class="cle" data-i18n="adresse">Adresse</span><span class="valeur" id="adresse">—</span></div>
+      <div class="ligne" data-tip="tip_version"><span class="cle" data-i18n="version">Version</span><span class="valeur" id="version">—</span></div>
+      <div class="ligne" data-tip="tip_uptime"><span class="cle" data-i18n="uptime">En marche depuis</span><span class="valeur" id="uptime">—</span></div>
+      <div class="ligne" data-tip="tip_sains"><span class="cle" data-i18n="modeles_dispo">Modèles disponibles</span><span class="valeur" id="sains">—</span></div>
+      <div class="ligne" data-tip="tip_reussite"><span class="cle" data-i18n="derniere_reussite">Dernière réussite</span><span class="valeur" id="reussite">—</span></div>
+      <div class="ligne" data-tip="tip_reprise"><span class="cle" data-i18n="etat_repris_titre">État des modèles</span><span class="valeur" id="reprise">—</span></div>
+      <div class="ligne" data-tip="tip_chemin"><span class="cle" data-i18n="fichier_cles">Fichier de clés</span><span class="valeur" id="chemin" style="font-size:10px">—</span></div>
+      <div class="rangee">
+        <button id="btn-demarrer" class="principal" data-tip="tip_demarrer" data-i18n="demarrer">Démarrer</button>
+        <button id="btn-arreter" data-tip="tip_arreter" data-i18n="arreter">Arrêter</button>
+        <button id="btn-gestion" data-tip="tip_gestion" data-i18n="gestion">Gestion</button>
+      </div>
+      <label class="bascule" data-tip="tip_demarrage_windows">
+        <input type="checkbox" id="case-demarrage" />
+        <span data-i18n="demarrage_windows">Démarrer avec Windows</span>
+      </label>
+      <label class="bascule desactivee" data-tip="astuce_super_ia">
+        <input type="checkbox" id="case-super-ia" disabled />
+        <span data-i18n="super_ia">Super IA</span>
+        <span class="badge-bientot" data-i18n="bientot">bientôt</span>
+      </label>
+      <div class="astuce" style="margin-top:2px" data-i18n="astuce_demarrage">Se lance 20 secondes après l'ouverture de session, réduit dans la zone de notification.</div>
+    </section>
+
+    <section class="carte">
+      <h2 data-i18n="jeton_titre">Jeton d'accès</h2>
+      <div class="rangee" style="margin-top:0">
+        <input id="jeton" type="password" readonly value="" spellcheck="false" data-tip="tip_jeton" />
+        <button id="btn-voir" class="mini" data-tip="tip_voir" data-i18n="voir">Voir</button>
+        <button id="btn-copier" class="mini" data-tip="tip_copier" data-i18n="copier">Copier</button>
+      </div>
+      <div class="rangee" style="margin-top:10px">
+        <button id="btn-config-client" data-tip="tip_config_client" data-i18n="copier_config_client">Copier la configuration client</button>
+      </div>
+      <div class="astuce">
+        <span data-i18n="astuce_jeton_1">À coller dans le champ « clé API » du client, avec l'adresse</span>
+        <code id="adresse-2">http://127.0.0.1:3100/v1</code><span data-i18n="astuce_jeton_2">.</span>
+      </div>
+    </section>
+  </div>
+
+  <section class="carte" style="margin-top:12px">
+    <div class="entete-carte">
+      <h2 data-i18n="alias_titre">Alias et état des cibles</h2>
+      <button id="btn-rafraichir" class="mini" data-tip="tip_rafraichir">
+        <svg class="icone" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
+          <path d="M21 3v6h-6"></path>
+        </svg><span data-i18n="rafraichir">Rafraîchir</span>
+      </button>
+    </div>
+    <table>
+      <thead><tr>
+        <th data-i18n="th_cible">Cible</th>
+        <th style="width:130px" data-i18n="th_etat">État</th>
+        <th style="width:170px" data-i18n="th_detail">Détail</th>
+        <th style="width:92px"></th>
+      </tr></thead>
+      <tbody id="alias"></tbody>
+    </table>
+    <div class="astuce" data-i18n="astuce_alias">Le client demande un alias ; la passerelle essaie les cibles dans l'ordre et ne bascule qu'avant le premier octet de réponse. Une cible en pause revient seule après son délai ; une cible en panne ou épuisée attend « Réessayer ».</div>
+  </section>
+
+  <div id="alerte" class="alerte"></div>
+
+  <section class="carte" style="margin-top:12px">
+    <h2 data-i18n="journal">Journal</h2>
+    <pre id="journal" class="journal"></pre>
+  </section>
+
+  <div class="pied">
+    <span data-i18n="pied">Les clés restent sur ce poste. Aucune donnée ne transite par un serveur tiers.</span>
+    <button id="btn-quitter" class="mini danger" data-tip="tip_quitter" data-i18n="quitter">Quitter</button>
+  </div>
+
+  <div id="voile" class="voile">
+    <div class="panneau">
+      <div class="entete-panneau">
+        <div>
+          <div class="titre-panneau" data-i18n="gestion_titre">Gestion des clés</div>
+          <div class="sous" data-i18n="gestion_sous">Les clés sont enregistrées dans le fichier local et appliquées immédiatement, sans redémarrage.</div>
+        </div>
+        <button id="btn-fermer-gestion" class="mini" data-tip="tip_fermer" data-i18n="fermer">Fermer</button>
+      </div>
+      <div id="liste-fournisseurs"></div>
+      <div class="astuce" id="chemin-gestion"></div>
+    </div>
+  </div>
+
+<div id="infobulle" role="tooltip" hidden></div>
+
+<script>
+  const { invoke } = window.__TAURI__.core;
+  const $ = (id) => document.getElementById(id);
+
+  const I18N = {
+    fr: {
+      sous_titre: "Passerelle locale compatible OpenAI",
+      service: "Service",
+      adresse: "Adresse",
+      version: "Version",
+      uptime: "En service depuis",
+      modeles_dispo: "Modèles qui répondent",
+      derniere_reussite: "Dernière réponse reçue",
+      etat_repris_titre: "État des modèles",
+      etat_repris: "Vérifié {d}",
+      jamais_verifie: "Aucune vérification enregistrée",
+      demarrage_windows: "Démarrer avec Windows",
+      astuce_demarrage: "Se lance 20 secondes après l'ouverture de session, réduit dans la zone de notification.",
+      copier_config_client: "Copier la configuration client",
+      config_client_copiee: "Configuration client copiée.",
+      tester: "Tester",
+      test_fournisseur_lance: "Test de {nom} en cours…",
+      fichier_cles: "Fichier de clés",
+      demarrer: "Démarrer",
+      arreter: "Arrêter",
+      gestion: "Gestion",
+      jeton_titre: "Jeton d'accès",
+      voir: "Voir",
+      masquer: "Masquer",
+      copier: "Copier",
+      copie: "Copié",
+      astuce_jeton_1: "À coller dans le champ « clé API » du client, avec l'adresse",
+      astuce_jeton_2: ".",
+      alias_titre: "Alias et état des modèles",
+      rafraichir: "Rafraîchir",
+      th_cible: "Modèle",
+      th_etat: "État",
+      th_detail: "Dernier résultat",
+      astuce_alias: "Votre client demande un alias (par exemple « defaut »). La passerelle essaie les modèles dans l'ordre : ceux qui répondent d'abord, puis ceux qui n'ont pas encore été testés. Elle ne change de modèle qu'avant le premier mot de la réponse, jamais au milieu.",
+      journal: "Journal",
+      pied: "Vos clés restent dans un fichier de cet ordinateur. Elles ne passent par aucun serveur intermédiaire.",
+      quitter: "Quitter",
+      modele_charge: "Modèle chargé",
+      modele_aucun: "Aucun modèle actif",
+      modele_inactif: "Service arrêté",
+      connexion: "Connexion…",
+      service_arrete: "Service arrêté",
+      verification: "Vérification…",
+      llm_connecte: "LLM connecté",
+      aucun_dispo: "Aucun modèle disponible",
+      erreur: "Erreur",
+      interface_indisponible: "Interface indisponible",
+      lecture_impossible: "Impossible de lire l'état : ",
+      cibles_n: "{n} modèle(s)",
+      il_y_a: "il y a {d}",
+      encore_testee: "Pas encore testé",
+      echecs_retester: "Dernier essai en échec ({n} fois)",
+      credits_epuises: "Crédit épuisé chez le fournisseur",
+      reessayer: "Réessayer",
+      test: "Test…",
+      etat_sain: "joignable",
+      etat_inconnu: "non testé",
+      etat_en_pause: "en attente",
+      etat_en_panne: "indisponible",
+      etat_epuise: "sans crédit",
+      sain_n: "{n} modèle(s) joignable(s)",
+      sain_sur_total: "{n} sur {total} joignables",
+      aucun_modele_fournisseur: "Aucun modèle ne répond",
+      test_en_cours: "Test des modèles en cours…",
+      cle_acceptee: "Clé acceptée : {n} modèle(s) répondent.",
+      cle_acceptee_partiel: "Clé acceptée, mais aucun modèle ne répond pour l'instant.",
+      cle_acceptee_limite: "Clé acceptée. Les modèles sont momentanément limités par le fournisseur (429).",
+      cle_refusee: "La clé a été enregistrée, mais le fournisseur la refuse.",
+      raison_quota: "quota atteint chez le fournisseur",
+      raison_cle: "clé refusée par le fournisseur",
+      raison_modele: "modèle introuvable",
+      raison_credit: "crédit épuisé chez le fournisseur",
+      raison_serveur: "le fournisseur a renvoyé une erreur",
+      raison_reseau: "pas de réponse du fournisseur",
+      raison_inconnue: "échec du dernier test",
+      nouvel_essai: "Nouvel essai dans {s} s",
+      appels_reussis: "{n} appels réussis",
+      tip_cible_reponse: "Répond en {d} en moyenne.",
+      tip_cible_sain: "Ce modèle répond. Il fait partie des modèles utilisés pour l'alias « {alias} ».",
+      tip_cible_pause: "Ce modèle est momentanément écarté : {raison}. La passerelle le retestera automatiquement dans {s} s.",
+      tip_cible_panne: "Ce modèle ne peut pas être utilisé : {raison}. Corrigez la clé dans « Gestion », puis cliquez sur « Réessayer ».",
+      tip_cible_epuise: "Ce modèle est écarté : {raison}. Il faudra recharger le compte du fournisseur.",
+      tip_cible_inconnu: "Ce modèle n'a pas encore été testé depuis le dernier rafraîchissement.",
+      tip_cible_inconnu_err: "Le dernier test a échoué : {raison}. La passerelle réessaiera automatiquement.",
+      tip_erreur_brute: "Réponse du fournisseur : {e}",
+      gestion_titre: "Gestion des clés",
+      gestion_sous: "Chaque clé est enregistrée dans le fichier local et prise en compte tout de suite : inutile de redémarrer.",
+      fermer: "Fermer",
+      cle_actuelle: "Clé enregistrée",
+      aucune_cle: "(aucune clé enregistrée)",
+      nouvelle_cle: "Remplacer la clé",
+      placeholder_cle: "collez la nouvelle clé ici…",
+      enregistrer: "Enregistrer",
+      effacer: "Effacer",
+      adresses_titre: "Adresses du fournisseur",
+      adresses_aide: "Cochez l'adresse à utiliser en priorité. Les autres servent de secours si elle ne répond pas.",
+      ajouter_adresse: "Ajouter une adresse",
+      enregistrer_adresses: "Enregistrer les adresses",
+      adresses_vides: "Ajoutez au moins une adresse.",
+      enregistre: "Enregistré. Test des modèles en cours…",
+      cle_vide: "Saisissez une clé, ou utilisez « Effacer » pour la supprimer.",
+      effacee: "Clé effacée.",
+      confirmer_effacer: "Confirmer l'effacement de {nom} ?",
+      confirmer_effacer_aide: "Cliquez une seconde fois sur le bouton pour effacer définitivement.",
+      chemin_cles: "Fichier de clés : {chemin}",
+      fournisseur_inconnu: "Fournisseur inconnu.",
+      tip_alias: "Nom que votre client envoie dans le champ « modèle ». La passerelle choisit parmi les modèles listés en dessous, dans l'ordre : ceux qui répondent d'abord.",
+      tip_langue: "Affiche toute la fenêtre en anglais, ou revient au français.",
+      tip_etat: "Voyant de connexion. Vert : au moins un modèle répond. Orange : aucun modèle ne répond. Bleu clignotant : test des fournisseurs en cours. Rouge : le service a signalé une erreur.",
+      tip_bandeau: "Le modèle qui répond en ce moment. La ligne du dessous indique, pour chaque fournisseur, combien de ses modèles sont joignables.",
+      tip_adresse: "Adresse à recopier dans votre client compatible OpenAI. Pensez à ajouter /v1 à la fin.",
+      tip_version: "Version installée. Elle change à chaque mise à jour.",
+      tip_uptime: "Depuis combien de temps le service tourne sans interruption.",
+      tip_sains: "Nombre de modèles qui ont répondu au dernier test, par rapport au nombre total de modèles configurés.",
+      tip_reussite: "Temps écoulé depuis la dernière réponse réussie, tous fournisseurs confondus.",
+      tip_reprise: "Au démarrage, la passerelle reprend l'état enregistré lors de la dernière session sans interroger les fournisseurs. Cette ligne indique de quand date la dernière vérification réelle. Une vérification se déclenche automatiquement si un appel échoue, ou quand vous cliquez sur « Rafraîchir ».",
+      tip_demarrage_windows: "Ajoute ApiVault_Proxy au démarrage de Windows : il s'ouvre 20 secondes après votre connexion, réduit dans la zone de notification, sans fenêtre qui s'affiche.",
+      tip_config_client: "Copie un bloc prêt à coller dans votre client : adresse locale, jeton d'accès et nom du modèle (« defaut »).",
+      tip_tester_fournisseur: "Relance immédiatement un vrai test sur tous les modèles de ce fournisseur, sans attendre une panne.",
+      tip_gratuit: "Modèle gratuit : aucune dépense chez le fournisseur.",
+      tip_payant: "Modèle payant : la consommation est facturée par le fournisseur.",
+      super_ia: "Super IA",
+      bientot: "bientôt",
+      astuce_super_ia: "Utilise un modèle de planification puis un modèle de rédaction (fonctionnalité à venir).",
+      modele_defaut: "modèle par défaut",
+      tip_modele_defaut: "C'est le modèle choisi par défaut. Cliquez sur un autre modèle pour le remplacer.",
+      tip_choisir_modele: "Cliquez sur cette ligne pour définir ce modèle par défaut.",
+      tip_chemin: "Fichier texte local qui contient vos clés API. Il n'est jamais transmis à un tiers.",
+      tip_demarrer: "Démarre le service local s'il est arrêté. Votre client pourra de nouveau s'y connecter.",
+      tip_arreter: "Arrête le service local. Les réglages et les clés sont conservés pour le prochain démarrage.",
+      tip_gestion: "Ouvre la gestion des clés API : voir la clé enregistrée, la remplacer, l'effacer, et choisir les adresses de chaque fournisseur.",
+      tip_jeton: "Mot de passe que votre client doit envoyer à la place d'une clé API. Il protège l'accès au service local.",
+      tip_voir: "Affiche le jeton en clair. Il est masqué par défaut pour éviter qu'il soit lu par-dessus votre épaule.",
+      tip_copier: "Copie le jeton dans le presse-papiers pour le coller dans votre client.",
+      tip_rafraichir: "Relance un vrai test de chaque modèle. Les états et le voyant se mettent à jour dans les secondes qui suivent.",
+      tip_quitter: "Ferme la fenêtre et arrête complètement le service. Utilisez plutôt « Arrêter » si vous voulez seulement couper le service.",
+      tip_fermer: "Ferme ce panneau et revient à l'écran principal.",
+      tip_reessayer: "Relance tout de suite un test sur ce modèle, sans attendre la fin de la pause.",
+      tip_cle_input: "Collez ici la clé fournie par le site du fournisseur. Elle sera enregistrée sur cet ordinateur uniquement.",
+      tip_urls: "Adresses du fournisseur. La ligne cochée est utilisée en premier ; les autres servent de secours si elle ne répond pas.",
+      tip_radio: "Cochez cette ligne pour que cette adresse soit essayée en premier.",
+      tip_supprimer_adresse: "Retire cette adresse de la liste.",
+      tip_ajouter_adresse: "Ajoute une ligne pour une autre adresse du même fournisseur.",
+      tip_resultat: "Résultat du dernier test pour ce fournisseur, mis à jour automatiquement.",
+    },
+    en: {
+      sous_titre: "OpenAI-compatible local gateway",
+      service: "Service",
+      adresse: "Address",
+      version: "Version",
+      uptime: "In service for",
+      modeles_dispo: "Models answering",
+      derniere_reussite: "Last response received",
+      etat_repris_titre: "Model status",
+      etat_repris: "Checked {d}",
+      jamais_verifie: "No check recorded yet",
+      demarrage_windows: "Start with Windows",
+      astuce_demarrage: "Starts 20 seconds after you sign in, minimised to the notification area.",
+      copier_config_client: "Copy the client configuration",
+      config_client_copiee: "Client configuration copied.",
+      tester: "Test",
+      test_fournisseur_lance: "Testing {nom}…",
+      fichier_cles: "Key file",
+      demarrer: "Start",
+      arreter: "Stop",
+      gestion: "Manage",
+      jeton_titre: "Access token",
+      voir: "Show",
+      masquer: "Hide",
+      copier: "Copy",
+      copie: "Copied",
+      astuce_jeton_1: "Paste this into your client's “API key” field, with the address",
+      astuce_jeton_2: ".",
+      alias_titre: "Aliases and model status",
+      rafraichir: "Refresh",
+      th_cible: "Model",
+      th_etat: "Status",
+      th_detail: "Last result",
+      astuce_alias: "Your client asks for an alias (for example “defaut”). The gateway tries models in order: those answering first, then those not yet tested. It only switches before the first word of a response, never in the middle.",
+      journal: "Log",
+      pied: "Your keys stay in a file on this computer. They never pass through a third-party server.",
+      quitter: "Quit",
+      modele_charge: "Loaded model",
+      modele_aucun: "No active model",
+      modele_inactif: "Service stopped",
+      connexion: "Connecting…",
+      service_arrete: "Service stopped",
+      verification: "Checking…",
+      llm_connecte: "LLM connected",
+      aucun_dispo: "No model available",
+      erreur: "Error",
+      interface_indisponible: "Interface unavailable",
+      lecture_impossible: "Unable to read the state: ",
+      cibles_n: "{n} model(s)",
+      il_y_a: "{d} ago",
+      encore_testee: "Not tested yet",
+      echecs_retester: "Last attempt failed ({n} times)",
+      credits_epuises: "Provider credit exhausted",
+      reessayer: "Retry",
+      test: "Testing…",
+      etat_sain: "reachable",
+      etat_inconnu: "not tested",
+      etat_en_pause: "waiting",
+      etat_en_panne: "unavailable",
+      etat_epuise: "no credit",
+      sain_n: "{n} model(s) reachable",
+      sain_sur_total: "{n} of {total} reachable",
+      aucun_modele_fournisseur: "No model is answering",
+      test_en_cours: "Testing models…",
+      cle_acceptee: "Key accepted: {n} model(s) answering.",
+      cle_acceptee_partiel: "Key accepted, but no model is answering yet.",
+      cle_acceptee_limite: "Key accepted. Models are temporarily rate-limited by the provider (429).",
+      cle_refusee: "The key was saved, but the provider rejects it.",
+      raison_quota: "provider quota reached",
+      raison_cle: "provider rejected the key",
+      raison_modele: "model not found",
+      raison_credit: "provider credit exhausted",
+      raison_serveur: "the provider returned an error",
+      raison_reseau: "no response from the provider",
+      raison_inconnue: "last test failed",
+      nouvel_essai: "Next attempt in {s} s",
+      appels_reussis: "{n} successful calls",
+      tip_cible_reponse: "Answers in {d} on average.",
+      tip_cible_sain: "This model answers. It is used for the alias “{alias}”.",
+      tip_cible_pause: "This model is temporarily set aside: {raison}. The gateway will test it again automatically in {s} s.",
+      tip_cible_panne: "This model cannot be used: {raison}. Fix the key in “Manage”, then click “Retry”.",
+      tip_cible_epuise: "This model is set aside: {raison}. The provider account needs a top-up.",
+      tip_cible_inconnu: "This model has not been tested since the last refresh.",
+      tip_cible_inconnu_err: "The last test failed: {raison}. The gateway will retry automatically.",
+      tip_erreur_brute: "Provider response: {e}",
+      gestion_titre: "Key management",
+      gestion_sous: "Each key is saved in the local file and applied immediately: no restart needed.",
+      fermer: "Close",
+      cle_actuelle: "Saved key",
+      aucune_cle: "(no key saved)",
+      nouvelle_cle: "Replace the key",
+      placeholder_cle: "paste the new key here…",
+      enregistrer: "Save",
+      effacer: "Clear",
+      adresses_titre: "Provider addresses",
+      adresses_aide: "Tick the address to use first. The others are fallbacks if it does not answer.",
+      ajouter_adresse: "Add an address",
+      enregistrer_adresses: "Save addresses",
+      adresses_vides: "Add at least one address.",
+      enregistre: "Saved. Testing models…",
+      cle_vide: "Enter a key, or use “Clear” to remove it.",
+      effacee: "Key cleared.",
+      confirmer_effacer: "Confirm deletion of {nom}?",
+      confirmer_effacer_aide: "Click the button once more to erase permanently.",
+      chemin_cles: "Key file: {chemin}",
+      fournisseur_inconnu: "Unknown provider.",
+      tip_alias: "Name your client sends in the “model” field. The gateway picks among the models listed below, in order: those answering first.",
+      tip_langue: "Shows the whole window in French, or switches back to English.",
+      tip_etat: "Connection light. Green: at least one model answers. Amber: no model answers. Pulsing blue: providers are being tested. Red: the service reported an error.",
+      tip_bandeau: "The model answering right now. The line below shows, for each provider, how many of its models are reachable.",
+      tip_adresse: "Address to enter in your OpenAI-compatible client. Do not forget the /v1 at the end.",
+      tip_version: "Installed version. It changes with each update.",
+      tip_uptime: "How long the service has been running without interruption.",
+      tip_sains: "Models that answered the last test, out of all configured models.",
+      tip_reussite: "Time since the last successful response, across all providers.",
+      tip_reprise: "On startup the gateway restores the state saved in the previous session without contacting providers. This line shows when the last real check happened. A check starts automatically when a call fails, or when you click “Refresh”.",
+      tip_demarrage_windows: "Adds ApiVault_Proxy to Windows startup: it opens 20 seconds after you sign in, minimised to the notification area, with no window shown.",
+      tip_config_client: "Copies a ready-to-paste block for your client: local address, access token and model name (“defaut”).",
+      tip_tester_fournisseur: "Runs a real test on every model of this provider right away, instead of waiting for a failure.",
+      tip_gratuit: "Free model: no cost at the provider.",
+      tip_payant: "Paid model: usage is billed by the provider.",
+      super_ia: "Super AI",
+      bientot: "soon",
+      astuce_super_ia: "Uses a planning model, then a writing model (coming soon).",
+      modele_defaut: "default model",
+      tip_modele_defaut: "This is the default model. Click another model to replace it.",
+      tip_choisir_modele: "Click this row to set this model as default.",
+      tip_chemin: "Local text file holding your API keys. It is never sent to a third party.",
+      tip_demarrer: "Starts the local service if it is stopped. Your client can connect again.",
+      tip_arreter: "Stops the local service. Settings and keys are kept for the next start.",
+      tip_gestion: "Opens API key management: view the saved key, replace it, clear it, and choose each provider's addresses.",
+      tip_jeton: "Password your client must send instead of an API key. It protects access to the local service.",
+      tip_voir: "Shows the token in plain text. It is hidden by default so nobody can read it over your shoulder.",
+      tip_copier: "Copies the token to the clipboard so you can paste it into your client.",
+      tip_rafraichir: "Runs a real test of every model. Statuses and the light update within seconds.",
+      tip_quitter: "Closes the window and stops the service completely. Use “Stop” if you only want to stop the service.",
+      tip_fermer: "Closes this panel and returns to the main screen.",
+      tip_reessayer: "Tests this model again right now, without waiting for the pause to end.",
+      tip_cle_input: "Paste the key from the provider's website here. It is saved on this computer only.",
+      tip_urls: "Provider addresses. The ticked one is tried first; the others are fallbacks if it does not answer.",
+      tip_radio: "Tick this line so this address is tried first.",
+      tip_supprimer_adresse: "Removes this address from the list.",
+      tip_ajouter_adresse: "Adds a line for another address of the same provider.",
+      tip_resultat: "Result of the latest test for this provider, updated automatically.",
+    },
+  };
+
+  let langue = localStorage.getItem("langue") === "en" ? "en" : "fr";
+  const t = (cle, vars) => {
+    let texte = (I18N[langue] && I18N[langue][cle]) || (I18N.fr[cle] || cle);
+    if (vars) {
+      for (const [k, v] of Object.entries(vars)) {
+        texte = texte.split("{" + k + "}").join(v);
+      }
+    }
+    return texte;
+  };
+
+  // --- Infobulles permanentes -------------------------------------------
+  const bulle = document.getElementById("infobulle");
+  let bulleCible = null;
+
+  function texteBulle(el) {
+    if (!el) return "";
+    if (el.dataset.tipTexte) return el.dataset.tipTexte;
+    const cle = el.dataset.tip;
+    if (!cle) return "";
+    const texte = t(cle);
+    return texte === cle ? "" : texte;
+  }
+
+  function positionnerBulle(el) {
+    if (!el || !bulle || bulle.hidden) return;
+    const r = el.getBoundingClientRect();
+    bulle.style.left = "0px";
+    bulle.style.top = "0px";
+    const b = bulle.getBoundingClientRect();
+    let gauche = r.left + r.width / 2 - b.width / 2;
+    gauche = Math.max(8, Math.min(gauche, window.innerWidth - b.width - 8));
+    let haut = r.top - b.height - 10;
+    if (haut < 8) haut = r.bottom + 10;
+    bulle.style.left = gauche + "px";
+    bulle.style.top = haut + "px";
+  }
+
+  function montrerBulle(el) {
+    const texte = texteBulle(el);
+    if (!texte || !bulle) return;
+    bulleCible = el;
+    bulle.textContent = texte;
+    bulle.hidden = false;
+    positionnerBulle(el);
+  }
+
+  function cacherBulle() {
+    bulleCible = null;
+    if (bulle) bulle.hidden = true;
+  }
+
+  document.addEventListener("pointerover", (e) => {
+    const el = e.target.closest && e.target.closest("[data-tip], [data-tip-texte]");
+    if (el) montrerBulle(el);
+  });
+  document.addEventListener("pointerout", (e) => {
+    const el = e.target.closest && e.target.closest("[data-tip], [data-tip-texte]");
+    if (el && !el.contains(e.relatedTarget)) cacherBulle();
+  });
+  document.addEventListener("focusin", (e) => {
+    const el = e.target.closest && e.target.closest("[data-tip], [data-tip-texte]");
+    if (el) montrerBulle(el);
+  });
+  document.addEventListener("focusout", (e) => {
+    const el = e.target.closest && e.target.closest("[data-tip], [data-tip-texte]");
+    if (el) cacherBulle();
+  });
+  window.addEventListener("scroll", () => {
+    if (bulleCible) positionnerBulle(bulleCible);
+  }, true);
+  window.addEventListener("resize", cacherBulle);
+
+  let jetonComplet = "";
+  let jetonVisible = false;
+  let dernierEtat = null;
+  let gestionCourante = null;
+  const messagesFournisseurs = {};
+// Un seul effacement en attente a la fois. L'etat doit vivre hors de
+// `occuper()`, sinon il est reinitialise a chaque clic et la double
+// confirmation ne se declenche jamais.
+let confirmationEffacement = { id: null, jusqua: 0, bouton: null, message: null };
+
+function annulerConfirmationEffacement() {
+  const attente = confirmationEffacement;
+  if (attente.bouton && attente.bouton.isConnected) {
+    attente.bouton.textContent = t("effacer");
+    attente.bouton.classList.remove("danger-fort");
+  }
+  if (attente.message && attente.message.isConnected && attente.message.dataset.confirmation === "1") {
+    attente.message.textContent = "";
+    delete attente.message.dataset.confirmation;
+  }
+  confirmationEffacement = { id: null, jusqua: 0, bouton: null, message: null };
+}
+  const sauvegardesRecentes = new Set();
+  let preferredModel = localStorage.getItem("preferredModel") || null;
+
+  function duree(secondes) {
+    if (secondes === null || secondes === undefined) return "—";
+    const s = Math.floor(secondes);
+    if (s < 60) return s + " s";
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + " min " + (s % 60) + " s";
+    const h = Math.floor(m / 60);
+    return h + " h " + (m % 60) + " min";
+  }
+
+  function nombre(ms) {
+    const texte = (ms / 1000).toFixed(2);
+    return (langue === "fr" ? texte.replace(".", ",") : texte) + " s";
+  }
+
+  function phraseSainSurTotal(n, total) {
+    if (langue === "fr") {
+      return n + (n > 1 ? " modèles joignables" : " modèle joignable") + " sur " + total;
+    }
+    return n + (n > 1 ? " models reachable" : " model reachable") + " out of " + total;
+  }
+
+  function phraseCleAcceptee(n) {
+    if (langue === "fr") {
+      return "Clé acceptée : " + n + (n > 1 ? " modèles répondent." : " modèle répond.");
+    }
+    return "Key accepted: " + n + (n > 1 ? " models are answering." : " model is answering.");
+  }
+
+  function afficherJeton() {
+    const champ = $("jeton");
+    champ.type = jetonVisible ? "text" : "password";
+    champ.value = jetonComplet || "";
+    $("btn-voir").textContent = jetonVisible ? t("masquer") : t("voir");
+  }
+
+  function cellule(texte, classe) {
+    const td = document.createElement("td");
+    if (classe) td.className = classe;
+    td.textContent = texte;
+    return td;
+  }
+
+  function badgeCible(c) {
+    const span = document.createElement("span");
+    span.className = "badge " + c.statut;
+    span.textContent = t("etat_" + c.statut);
+    return span;
+  }
+
+  function raison(erreur) {
+    if (!erreur) return "";
+    const e = String(erreur);
+    if (/\b429\b/.test(e)) return t("raison_quota");
+    if (/\b401\b|\b403\b/.test(e)) return t("raison_cle");
+    if (/\b404\b/.test(e)) return t("raison_modele");
+    if (/\b402\b/.test(e)) return t("raison_credit");
+    if (/\b5\d\d\b/.test(e)) return t("raison_serveur");
+    if (/timeout|timed out|connect|dns|network|injoignable/i.test(e)) return t("raison_reseau");
+    return t("raison_inconnue");
+  }
+
+  function detailCible(c) {
+    if (c.statut === "sain") {
+      const latence = c.latence_ms !== null && c.latence_ms !== undefined
+        ? nombre(c.latence_ms) + " · "
+        : "";
+      return latence + t("appels_reussis", { n: c.ok });
+    }
+    if (c.statut === "inconnu") {
+      if (c.erreur) return raison(c.erreur);
+      return c.ko > 0 ? t("echecs_retester", { n: c.ko }) : t("encore_testee");
+    }
+    if (c.statut === "en_pause") {
+      const reste = c.jusqu_a_s !== null && c.jusqu_a_s !== undefined
+        ? t("nouvel_essai", { s: c.jusqu_a_s })
+        : "";
+      return [reste, raison(c.erreur)].filter(Boolean).join(" · ");
+    }
+    if (c.statut === "epuise") return t("credits_epuises");
+    return raison(c.erreur) || String(c.erreur || "").slice(0, 70);
+  }
+
+  function infobulleCible(c, aliasNom) {
+    const lignes = [];
+    if (c.statut === "sain") {
+      lignes.push(t("tip_cible_sain", { alias: aliasNom }));
+      if (c.latence_ms !== null && c.latence_ms !== undefined) {
+        lignes.push(t("tip_cible_reponse", { d: nombre(c.latence_ms) }));
+      }
+      let bilan = t("appels_reussis", { n: c.ok });
+      if (c.ko > 0) bilan += " · " + t("echecs_retester", { n: c.ko });
+      lignes.push(bilan);
+      if (c.derniere_utilisation_s !== null && c.derniere_utilisation_s !== undefined) {
+        lignes.push("· " + t("il_y_a", { d: duree(c.derniere_utilisation_s) }));
+      }
+    } else if (c.statut === "en_pause") {
+      lignes.push(t("tip_cible_pause", {
+        raison: raison(c.erreur),
+        s: c.jusqu_a_s !== null && c.jusqu_a_s !== undefined ? c.jusqu_a_s : "?",
+      }));
+    } else if (c.statut === "en_panne") {
+      lignes.push(t("tip_cible_panne", { raison: raison(c.erreur) }));
+    } else if (c.statut === "epuise") {
+      lignes.push(t("tip_cible_epuise", { raison: raison(c.erreur) }));
+    } else if (c.erreur) {
+      lignes.push(t("tip_cible_inconnu_err", { raison: raison(c.erreur) }));
+    } else {
+      lignes.push(t("tip_cible_inconnu"));
+    }
+    if (c.erreur && raison(c.erreur) === t("raison_inconnue")) {
+      lignes.push(t("tip_erreur_brute", { e: String(c.erreur).slice(0, 300) }));
+    }
+    return lignes.join("\n");
+  }
+
+  function rendreAlias(alias) {
+    const tbody = $("alias");
+    tbody.innerHTML = "";
+
+    (alias || []).forEach((a) => {
+      const groupe = document.createElement("tr");
+      groupe.className = "groupe";
+      const titre = document.createElement("td");
+      titre.colSpan = 4;
+      titre.textContent = a.nom;
+      titre.dataset.tip = "tip_alias";
+      groupe.appendChild(titre);
+      tbody.appendChild(groupe);
+
+      (a.cibles || []).forEach((c) => {
+        const tr = document.createElement("tr");
+
+        const bulle = infobulleCible(c, a.nom);
+        tr.dataset.tipTexte = bulle;
+
+        const tdCible = cellule("", "mono cible-modele");
+        const etoile = document.createElement("span");
+        etoile.className = "etoile";
+        etoile.textContent = "☆";
+        tdCible.appendChild(etoile);
+        tdCible.appendChild(document.createTextNode(c.cible));
+        tdCible.dataset.tipTexte = bulle;
+        tr.appendChild(tdCible);
+
+        const tdEtat = document.createElement("td");
+        const badge = badgeCible(c);
+        badge.dataset.tipTexte = bulle;
+        tdEtat.appendChild(badge);
+        tr.appendChild(tdEtat);
+
+        const tdDetail = cellule(detailCible(c), "cible");
+        tdDetail.dataset.tipTexte = bulle;
+        tr.appendChild(tdDetail);
+
+        const tdAction = document.createElement("td");
+        const bouton = document.createElement("button");
+        bouton.className = "mini";
+        bouton.textContent = t("reessayer");
+        bouton.dataset.tip = "tip_reessayer";
+        bouton.addEventListener("click", async (e) => {
+          // Ne pas selectionner le modele quand on clique sur « Reessayer ».
+          e.stopPropagation();
+          bouton.disabled = true;
+          bouton.textContent = t("test");
+          await invoke("tester_cible", { fournisseur: c.fournisseur, modele: c.modele });
+          setTimeout(rafraichir, 900);
+        });
+        tdAction.appendChild(bouton);
+        tr.appendChild(tdAction);
+
+        tr.dataset.modele = c.modele;
+        tr.classList.add("ligne-cible");
+        tr.tabIndex = 0;
+        tr.setAttribute("role", "button");
+        const choisirModele = async () => {
+          preferredModel = c.modele;
+          localStorage.setItem("preferredModel", preferredModel);
+          appliquerSelectionModele();
+          rendreBandeau(dernierEtat);
+          try {
+            // Persiste aussi cote passerelle : l'alias « defaut » utilisera
+            // ce modele en premier des le prochain demarrage.
+            await invoke("definir_modele_prefere", { modele: preferredModel });
+          } catch (err) {
+            // L'interface reste utilisable meme si l'ecriture du fichier
+            // de configuration echoue.
+            console.warn("modele prefere non persiste :", err);
+          }
+        };
+        tr.addEventListener("click", choisirModele);
+        tr.addEventListener("keydown", (e) => {
+          if (e.target !== tr) return;
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            choisirModele();
+          }
+        });
+
+        tbody.appendChild(tr);
+      });
+    });
+
+    appliquerSelectionModele();
+  }
+
+  function appliquerSelectionModele() {
+    document.querySelectorAll("#alias tr[data-modele]").forEach((row) => {
+      const actif = row.dataset.modele === preferredModel;
+      row.classList.toggle("selected", actif);
+      row.setAttribute("aria-pressed", actif ? "true" : "false");
+      const etoile = row.querySelector(".etoile");
+      if (etoile) {
+        etoile.textContent = actif ? "★" : "☆";
+        etoile.dataset.tip = actif ? "tip_modele_defaut" : "tip_choisir_modele";
+      }
+    });
+  }
+
+  function cibleActive(alias) {
+    const priorite = ["defaut", "gratuit", "rapide", "gratuit-secours"];
+    const noms = priorite.concat(
+      (alias || []).map((a) => a.nom).filter((n) => !priorite.includes(n))
+    );
+    for (const nom of noms) {
+      const a = (alias || []).find((x) => x.nom === nom);
+      if (!a) continue;
+      const c = (a.cibles || []).find((x) => x.statut === "sain");
+      if (c) return { alias: nom, cible: c };
+    }
+    return null;
+  }
+
+  function resumeFournisseurs(alias) {
+    const resume = new Map();
+    const vus = new Set();
+    (alias || []).forEach((a) => {
+      (a.cibles || []).forEach((c) => {
+        const identifiant = c.fournisseur + "/" + c.modele;
+        if (vus.has(identifiant)) return;
+        vus.add(identifiant);
+        if (!resume.has(c.fournisseur)) {
+          resume.set(c.fournisseur, { sains: 0, total: 0, erreur: null, enAttente: 0, modeles: [] });
+        }
+        const r = resume.get(c.fournisseur);
+        r.total += 1;
+        if (c.statut === "sain") {
+          r.sains += 1;
+          r.modeles.push(c.modele);
+        } else if (c.statut === "en_pause") r.enAttente += 1;
+        if (!r.erreur && c.erreur) r.erreur = c.erreur;
+      });
+    });
+    return resume;
+  }
+
+  function majResultatsFournisseurs(e) {
+    if (!gestionCourante) return;
+    const resume = resumeFournisseurs(e.alias);
+    document.querySelectorAll("[data-resultat]").forEach((el) => {
+      const id = el.dataset.resultat;
+      const r = resume.get(id);
+      el.className = "resultat";
+      delete el.dataset.tipTexte;
+      if (!r) {
+        el.textContent = "—";
+        return;
+      }
+      if (r.erreur) el.dataset.tipTexte = String(r.erreur);
+      if (e.sondage) {
+        el.textContent = t("test_en_cours");
+        return;
+      }
+      if (r.sains > 0) {
+        el.classList.add("ok");
+        let texte = phraseSainSurTotal(r.sains, r.total);
+        if (r.modeles.length) texte += " — " + r.modeles.join(", ");
+        if (r.enAttente > 0) texte += " · " + r.enAttente + " " + t("etat_en_pause");
+        el.textContent = texte;
+      } else {
+        // Check if key present but no models responding
+        const f = gestionCourante?.fournisseurs?.find(f => f.id === id);
+        const hasKey = f && f.cle_presente;
+        const limite = r.erreur && /\b429\b/.test(String(r.erreur));
+        if (hasKey && !r.erreur) {
+          el.classList.add("ok");
+          el.textContent = t("cle_acceptee_partiel");
+        } else if (hasKey && limite) {
+          el.classList.add("limite");
+          el.textContent = t("cle_acceptee_limite");
+        } else {
+          el.classList.add("err");
+          el.textContent = t("aucun_modele_fournisseur") +
+            (r.erreur ? " · " + raison(r.erreur) : "");
+        }
+      }
+    });
+  }
+
+  function majMessagesSauvegarde(e) {
+    if (e.sondage || sauvegardesRecentes.size === 0) return;
+    const resume = resumeFournisseurs(e.alias);
+    [...sauvegardesRecentes].forEach((id) => {
+      const message = messagesFournisseurs[id];
+      const r = resume.get(id);
+      if (!message || !r) return;
+      delete message.dataset.tipTexte;
+      if (r.sains > 0) {
+        message.className = "message-mini ok";
+        message.textContent = phraseCleAcceptee(r.sains);
+      } else if (r.erreur && /\b429\b/.test(String(r.erreur))) {
+        message.className = "message-mini limite";
+        message.textContent = t("cle_acceptee_limite");
+        message.dataset.tipTexte = String(r.erreur);
+      } else {
+        message.className = "message-mini err";
+        message.textContent = r.erreur && /\b401\b|\b403\b/.test(String(r.erreur))
+          ? t("cle_refusee")
+          : t("cle_acceptee_partiel");
+      }
+      sauvegardesRecentes.delete(id);
+    });
+  }
+
+  function rendreBandeau(e) {
+    const bandeau = $("bandeau-modele");
+    const valeur = $("modele-valeur");
+    const detail = $("bandeau-detail");
+    const actif = e && e.actif ? cibleActive(e.alias) : null;
+    bandeau.classList.toggle("actif", !!actif);
+
+    if (!e) {
+      valeur.textContent = "—";
+      detail.textContent = "";
+      return;
+    }
+
+    const resume = resumeFournisseurs(e.alias);
+    let displayModele = null;
+    if (preferredModel) {
+      for (const [nom, r] of resume) {
+        if (r.modeles.includes(preferredModel) && r.sains > 0) {
+          displayModele = preferredModel;
+          break;
+        }
+      }
+    }
+
+    if (displayModele) {
+      valeur.textContent = preferredModel === displayModele
+        ? displayModele + " (" + t("modele_defaut") + ")"
+        : displayModele;
+    } else if (!e.actif) {
+      valeur.textContent = t("modele_inactif");
+    } else {
+      valeur.textContent = actif.alias + " · " + actif.cible.fournisseur + "/" + actif.cible.modele;
+    }
+
+    detail.innerHTML = "";
+    if (e.sondage) {
+      detail.textContent = t("test_en_cours");
+      return;
+    }
+    let premier = true;
+    resume.forEach((r, nom) => {
+      if (!premier) {
+        const sep = document.createElement("span");
+        sep.className = "separateur";
+        sep.textContent = " · ";
+        detail.appendChild(sep);
+      }
+      premier = false;
+      const span = document.createElement("span");
+      if (r.sains > 0) {
+        span.className = "fournisseur-ok";
+        span.textContent = nom + " : " + r.modeles.join(", ");
+      } else {
+        span.className = "fournisseur-ko";
+        span.textContent = nom + " : " + t("aucun_modele_fournisseur");
+      }
+      detail.appendChild(span);
+    });
+  }
+
+  async function rafraichir() {
+    try {
+      const e = await invoke("etat");
+      dernierEtat = e;
+
+      const adresse = "http://127.0.0.1:" + e.port;
+      $("adresse").textContent = adresse;
+      $("adresse-2").textContent = adresse + "/v1";
+      $("version").textContent = "v" + e.version;
+      $("uptime").textContent = e.actif ? duree(e.depuis_s) : "—";
+      $("chemin").textContent = e.chemin_cles || "—";
+
+      if (e.jeton && e.jeton !== jetonComplet) {
+        jetonComplet = e.jeton;
+        afficherJeton();
+      }
+
+      if (!preferredModel && e.modele_prefere) {
+        preferredModel = e.modele_prefere;
+        localStorage.setItem("preferredModel", preferredModel);
+      }
+
+      rendreBandeau(e);
+
+      const pastille = $("pastille");
+      pastille.className = "pastille";
+      if (!e.actif) {
+        $("etat-texte").textContent = t("service_arrete");
+      } else if (e.sondage) {
+        pastille.classList.add("attente");
+        $("etat-texte").textContent = t("verification");
+      } else if (e.connecte) {
+        pastille.classList.add("actif");
+        $("etat-texte").textContent = t("llm_connecte");
+      } else {
+        pastille.classList.add("alerte");
+        $("etat-texte").textContent = t("aucun_dispo");
+      }
+
+      $("btn-demarrer").disabled = e.actif;
+      $("btn-arreter").disabled = !e.actif;
+
+      const totalUnique = new Set(
+        (e.alias || []).flatMap((a) => (a.cibles || []).map((c) => c.fournisseur + "/" + c.modele))
+      ).size;
+      $("sains").textContent = e.sains + " / " + totalUnique;
+      $("reussite").textContent =
+        e.derniere_reussite_s === null || e.derniere_reussite_s === undefined
+          ? "—"
+          : t("il_y_a", { d: duree(e.derniere_reussite_s) });
+
+      // Etat repris de la session precedente : age de la derniere verification.
+      $("reprise").textContent =
+        e.derniere_verification_s === null || e.derniere_verification_s === undefined
+          ? t("jamais_verifie")
+          : t("etat_repris", { d: duree(e.derniere_verification_s) });
+
+      const btnRaf = $("btn-rafraichir");
+      btnRaf.classList.toggle("occupe", !!e.sondage);
+      btnRaf.disabled = !!e.sondage;
+
+      if (e.erreur) {
+        pastille.classList.add("erreur");
+        $("etat-texte").textContent = t("erreur");
+        $("alerte").textContent = e.erreur;
+        $("alerte").classList.add("visible");
+      } else {
+        $("alerte").classList.remove("visible");
+        $("alerte").textContent = "";
+      }
+
+      rendreAlias(e.alias);
+      if (gestionCourante) {
+        majResultatsFournisseurs(e);
+        majMessagesSauvegarde(e);
+      }
+    } catch (err) {
+      $("etat-texte").textContent = t("interface_indisponible");
+      $("alerte").textContent = t("lecture_impossible") + err;
+      $("alerte").classList.add("visible");
+    }
+  }
+
+  async function rafraichirJournal() {
+    try {
+      const lignes = await invoke("journal");
+      const zone = $("journal");
+      const colle = zone.scrollTop + zone.clientHeight >= zone.scrollHeight - 20;
+      zone.textContent = lignes.join("\n");
+      if (colle) zone.scrollTop = zone.scrollHeight;
+    } catch (_) { /* ignore */ }
+  }
+
+  function appliquerLangue() {
+    document.documentElement.lang = langue;
+    cacherBulle();
+    document.querySelectorAll("[data-i18n]").forEach((el) => {
+      el.textContent = t(el.dataset.i18n);
+    });
+    $("btn-langue").textContent = langue === "fr" ? "EN" : "FR";
+    $("btn-voir").textContent = jetonVisible ? t("masquer") : t("voir");
+    appliquerLangueGestion();
+    if (dernierEtat) {
+      rendreBandeau(dernierEtat);
+      rendreAlias(dernierEtat.alias);
+      if (dernierEtat.erreur) $("alerte").textContent = dernierEtat.erreur;
+      // Met a jour les libelles dynamiques (compteurs, durees) dans la langue choisie.
+      rafraichir();
+    }
+  }
+
+  function blocFournisseur(f) {
+    const bloc = document.createElement("section");
+    bloc.className = "fournisseur";
+
+    const tete = document.createElement("div");
+    tete.className = "fournisseur-tete";
+    const nom = document.createElement("span");
+    nom.className = "fournisseur-nom";
+    nom.textContent = f.id;
+    const cle = document.createElement("span");
+    cle.className = "fournisseur-cle";
+    cle.textContent = f.cle_presente
+      ? t("cle_actuelle") + " : " + f.cle_masquee
+      : t("aucune_cle");
+    tete.appendChild(nom);
+    tete.appendChild(cle);
+
+    const btnTester = document.createElement("button");
+    btnTester.className = "mini";
+    btnTester.textContent = t("tester");
+    btnTester.dataset.tip = "tip_tester_fournisseur";
+    btnTester.style.flex = "none";
+    btnTester.addEventListener("click", async () => {
+      btnTester.disabled = true;
+      btnTester.textContent = t("test_fournisseur_lance", { nom: f.id });
+      try {
+        await invoke("tester_fournisseur", { fournisseur: f.id });
+        const m = messagesFournisseurs[f.id];
+        if (m) { m.className = "message-mini"; m.textContent = t("test_en_cours"); }
+      } catch (err) {
+        const m = messagesFournisseurs[f.id];
+        if (m) { m.className = "message-mini err"; m.textContent = String(err); }
+      }
+      setTimeout(() => { btnTester.disabled = false; btnTester.textContent = t("tester"); }, 3000);
+    });
+    tete.appendChild(btnTester);
+    bloc.appendChild(tete);
+
+    // Modeles du fournisseur, avec un badge gratuit / payant.
+    if (f.modeles && f.modeles.length) {
+      const listeModeles = document.createElement("div");
+      listeModeles.className = "modeles-fournisseur";
+      f.modeles.forEach((m) => {
+        const puce = document.createElement("span");
+        puce.className = "puce-modele " + (m.gratuit ? "gratuit" : "payant");
+        puce.textContent = m.modele + (m.gratuit ? " · gratuit" : " · payant");
+        puce.dataset.tip = m.gratuit ? "tip_gratuit" : "tip_payant";
+        listeModeles.appendChild(puce);
+      });
+      bloc.appendChild(listeModeles);
+    }
+
+    const etiquetteCle = document.createElement("label");
+    etiquetteCle.className = "etiquette";
+    etiquetteCle.textContent = t("nouvelle_cle");
+    bloc.appendChild(etiquetteCle);
+
+    const rangeeCle = document.createElement("div");
+    rangeeCle.className = "rangee";
+    rangeeCle.style.marginTop = "0";
+    const champCle = document.createElement("input");
+    champCle.type = "password";
+    champCle.placeholder = t("placeholder_cle");
+    champCle.dataset.tip = "tip_cle_input";
+    champCle.autocomplete = "off";
+    champCle.spellcheck = false;
+    const btnCle = document.createElement("button");
+    btnCle.className = "mini principal";
+    btnCle.textContent = t("enregistrer");
+    const btnEffacer = document.createElement("button");
+    btnEffacer.className = "mini danger";
+    btnEffacer.textContent = t("effacer");
+    rangeeCle.appendChild(champCle);
+    rangeeCle.appendChild(btnCle);
+    rangeeCle.appendChild(btnEffacer);
+    bloc.appendChild(rangeeCle);
+
+    const etiquetteUrl = document.createElement("label");
+    etiquetteUrl.className = "etiquette";
+    etiquetteUrl.textContent = t("adresses_titre");
+    bloc.appendChild(etiquetteUrl);
+
+    const aide = document.createElement("div");
+    aide.className = "astuce";
+    aide.style.marginTop = "0";
+    aide.textContent = t("adresses_aide");
+    bloc.appendChild(aide);
+
+    const zoneAdresses = document.createElement("div");
+    zoneAdresses.className = "adresses";
+    zoneAdresses.style.marginTop = "8px";
+    bloc.appendChild(zoneAdresses);
+
+    const rangeeUrl = document.createElement("div");
+    rangeeUrl.className = "rangee";
+    rangeeUrl.style.marginTop = "8px";
+    const btnAjouter = document.createElement("button");
+    btnAjouter.className = "mini";
+    btnAjouter.textContent = t("ajouter_adresse");
+    btnAjouter.dataset.tip = "tip_ajouter_adresse";
+    const btnUrl = document.createElement("button");
+    btnUrl.className = "mini principal";
+    btnUrl.textContent = t("enregistrer_adresses");
+    rangeeUrl.appendChild(btnAjouter);
+    rangeeUrl.appendChild(btnUrl);
+    bloc.appendChild(rangeeUrl);
+
+    const resultat = document.createElement("div");
+    resultat.className = "resultat";
+    resultat.dataset.resultat = f.id;
+    resultat.dataset.tip = "tip_resultat";
+    bloc.appendChild(resultat);
+
+    function marquerDefaut() {
+      zoneAdresses.querySelectorAll(".adresse-ligne").forEach((l) => {
+        l.classList.toggle("par-defaut", l.querySelector("input[type=radio]").checked);
+      });
+    }
+
+    function ajouterLigne(url, coche) {
+      const ligne = document.createElement("div");
+      ligne.className = "adresse-ligne" + (coche ? " par-defaut" : "");
+
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = "defaut-" + f.id;
+      radio.checked = !!coche;
+      radio.dataset.tip = "tip_radio";
+      radio.addEventListener("change", marquerDefaut);
+
+      const champ = document.createElement("input");
+      champ.type = "text";
+      champ.value = url || "";
+      champ.placeholder = "https://…";
+      champ.dataset.tip = "tip_urls";
+      champ.spellcheck = false;
+
+      const retirer = document.createElement("button");
+      retirer.className = "mini danger";
+      retirer.textContent = "✕";
+      retirer.dataset.tip = "tip_supprimer_adresse";
+      retirer.addEventListener("click", () => {
+        if (zoneAdresses.querySelectorAll(".adresse-ligne").length <= 1) return;
+        const etaitCoche = radio.checked;
+        ligne.remove();
+        if (etaitCoche) {
+          const premiere = zoneAdresses.querySelector(".adresse-ligne input[type=radio]");
+          if (premiere) {
+            premiere.checked = true;
+            marquerDefaut();
+          }
+        }
+      });
+
+      ligne.appendChild(radio);
+      ligne.appendChild(champ);
+      ligne.appendChild(retirer);
+      zoneAdresses.appendChild(ligne);
+    }
+
+    function remplirAdresses(urls) {
+      zoneAdresses.innerHTML = "";
+      const liste = urls && urls.length ? urls : [""];
+      liste.forEach((url, i) => ajouterLigne(url, i === 0));
+    }
+
+    function lireAdresses() {
+      const lignes = [...zoneAdresses.querySelectorAll(".adresse-ligne")];
+      const choisie = lignes.find((l) => l.querySelector("input[type=radio]").checked);
+      const ordonnees = choisie ? [choisie, ...lignes.filter((l) => l !== choisie)] : lignes;
+      return ordonnees
+        .map((l) => l.querySelector("input[type=text]").value.trim())
+        .filter((u) => u.length > 0);
+    }
+
+    remplirAdresses(f.urls);
+
+    btnAjouter.addEventListener("click", () => {
+      ajouterLigne("", false);
+      const champs = zoneAdresses.querySelectorAll("input[type=text]");
+      if (champs.length) champs[champs.length - 1].focus();
+    });
+
+    const message = document.createElement("div");
+    message.className = "message-mini";
+    bloc.appendChild(message);
+
+    const occuper = async (action) => {
+      const maintenant = Date.now();
+      const confirme = confirmationEffacement.id === f.id
+        && maintenant < confirmationEffacement.jusqua;
+
+      if (action === "effacer" && !confirme) {
+        // Une seule confirmation a la fois : on remet l'ancien bouton a zero.
+        annulerConfirmationEffacement();
+        confirmationEffacement = {
+          id: f.id,
+          jusqua: maintenant + 2500,
+          bouton: btnEffacer,
+          message,
+        };
+        btnEffacer.textContent = t("confirmer_effacer", { nom: f.id });
+        btnEffacer.classList.add("danger-fort");
+        message.className = "message-mini";
+        message.dataset.confirmation = "1";
+        message.textContent = t("confirmer_effacer_aide");
+        setTimeout(() => {
+          if (confirmationEffacement.id === f.id && Date.now() >= confirmationEffacement.jusqua) {
+            annulerConfirmationEffacement();
+          }
+        }, 2600);
+        return; // attend le second clic
+      }
+
+      if (action !== "effacer" && confirmationEffacement.id === f.id) {
+        annulerConfirmationEffacement();
+      }
+
+      if (action === "effacer") {
+        annulerConfirmationEffacement();
+      }
+
+      champCle.disabled = true;
+      btnCle.disabled = true;
+      btnEffacer.disabled = true;
+      btnUrl.disabled = true;
+      btnAjouter.disabled = true;
+      try {
+        let donnees;
+        if (action === "cle") {
+          if (!champCle.value.trim()) {
+            message.className = "message-mini err";
+            message.textContent = t("cle_vide");
+            return;
+          }
+          donnees = await invoke("enregistrer_cle", { fournisseur: f.id, cle: champCle.value });
+          message.className = "message-mini";
+          message.textContent = t("test_en_cours");
+        } else if (action === "effacer") {
+          donnees = await invoke("enregistrer_cle", { fournisseur: f.id, cle: "" });
+          message.className = "message-mini ok";
+          message.textContent = t("effacee");
+        } else {
+          const urls = lireAdresses();
+          if (!urls.length) {
+            message.className = "message-mini err";
+            message.textContent = t("adresses_vides");
+            return;
+          }
+          donnees = await invoke("enregistrer_adresses", { fournisseur: f.id, adresses: urls.join("\n") });
+          message.className = "message-mini";
+          message.textContent = t("test_en_cours");
+        }
+        if (action !== "effacer") {
+          messagesFournisseurs[f.id] = message;
+          sauvegardesRecentes.add(f.id);
+        }
+        gestionCourante = donnees;
+        // Mise a jour sur place (sans reconstruire le bloc, pour garder le message).
+        const frais = (donnees.fournisseurs || []).find((x) => x.id === f.id);
+        if (frais) {
+          cle.textContent = frais.cle_presente
+            ? t("cle_actuelle") + " : " + frais.cle_masquee
+            : t("aucune_cle");
+          remplirAdresses(frais.urls);
+        }
+        setTimeout(rafraichir, 500);
+      } catch (err) {
+        message.className = "message-mini err";
+        message.textContent = String(err);
+      } finally {
+        champCle.disabled = false;
+        btnCle.disabled = false;
+        btnEffacer.disabled = false;
+        btnUrl.disabled = false;
+        btnAjouter.disabled = false;
+      }
+    };
+
+    btnCle.addEventListener("click", () => occuper("cle"));
+    btnEffacer.addEventListener("click", () => occuper("effacer"));
+    btnUrl.addEventListener("click", () => occuper("urls"));
+
+    return bloc;
+  }
+
+  function rendreGestion() {
+    const zone = $("liste-fournisseurs");
+    if (!gestionCourante) return;
+    zone.innerHTML = "";
+    for (const id of Object.keys(messagesFournisseurs)) delete messagesFournisseurs[id];
+    (gestionCourante.fournisseurs || []).forEach((f) => zone.appendChild(blocFournisseur(f)));
+    $("chemin-gestion").textContent = t("chemin_cles", {
+      chemin: gestionCourante.chemin_cles || "—",
+    });
+  }
+
+  function appliquerLangueGestion() {
+    if (gestionCourante) rendreGestion();
+  }
+
+  async function ouvrirGestion() {
+    try {
+      gestionCourante = await invoke("gestion");
+      rendreGestion();
+      appliquerLangue();
+      $("voile").classList.add("visible");
+    } catch (err) {
+      $("alerte").textContent = String(err);
+      $("alerte").classList.add("visible");
+    }
+  }
+
+  function fermerGestion() {
+    $("voile").classList.remove("visible");
+  }
+
+  $("btn-langue").addEventListener("click", () => {
+    langue = langue === "fr" ? "en" : "fr";
+    localStorage.setItem("langue", langue);
+    appliquerLangue();
+  });
+
+  $("btn-demarrer").addEventListener("click", async () => {
+    await invoke("demarrer");
+    setTimeout(rafraichir, 250);
+  });
+
+  $("btn-arreter").addEventListener("click", async () => {
+    await invoke("arreter");
+    setTimeout(rafraichir, 250);
+  });
+
+  $("btn-voir").addEventListener("click", () => {
+    jetonVisible = !jetonVisible;
+    afficherJeton();
+  });
+
+  $("btn-copier").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(jetonComplet);
+      $("btn-copier").textContent = t("copie");
+    } catch (_) {
+      $("jeton").type = "text";
+      $("jeton").select();
+      document.execCommand("copy");
+      $("btn-copier").textContent = t("copie");
+    }
+    setTimeout(() => { $("btn-copier").textContent = t("copier"); }, 1400);
+  });
+
+  $("btn-rafraichir").addEventListener("click", async () => {
+    const bouton = $("btn-rafraichir");
+    bouton.classList.add("occupe");
+    bouton.disabled = true;
+    await invoke("rafraichir");
+    setTimeout(rafraichir, 400);
+  });
+
+  $("btn-gestion").addEventListener("click", ouvrirGestion);
+  $("btn-fermer-gestion").addEventListener("click", fermerGestion);
+  $("voile").addEventListener("click", (e) => {
+    if (e.target === $("voile")) fermerGestion();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") fermerGestion();
+  });
+
+  $("btn-config-client").addEventListener("click", async () => {
+    const port = (dernierEtat && dernierEtat.port) || 3100;
+    const modele = preferredModel || "defaut";
+    const configuration = {
+      fournisseur: "ApiVault_Proxy",
+      type: "openai",
+      base_url: "http://127.0.0.1:" + port + "/v1",
+      api_key: jetonComplet,
+      modele: modele,
+    };
+    const texte = JSON.stringify(configuration, null, 2);
+    try {
+      await navigator.clipboard.writeText(texte);
+    } catch (_) {
+      const zone = document.createElement("textarea");
+      zone.value = texte;
+      document.body.appendChild(zone);
+      zone.select();
+      document.execCommand("copy");
+      zone.remove();
+    }
+    const bouton = $("btn-config-client");
+    bouton.textContent = t("config_client_copiee");
+    setTimeout(() => { bouton.textContent = t("copier_config_client"); }, 2200);
+  });
+
+  async function majDemarrageWindows() {
+    try {
+      const e = await invoke("demarrage_windows_etat");
+      $("case-demarrage").checked = !!e.actif;
+    } catch (_) { /* sans consequence */ }
+  }
+
+  $("case-demarrage").addEventListener("change", async (evenement) => {
+    const case_ = evenement.target;
+    const bloc = case_.closest(".bascule");
+    const voulu = case_.checked;
+    bloc.classList.add("en_cours");
+    try {
+      const e = await invoke("configurer_demarrage_windows", { actif: voulu });
+      case_.checked = !!e.actif;
+      $("alerte").classList.remove("visible");
+    } catch (err) {
+      case_.checked = !voulu;
+      $("alerte").textContent = String(err);
+      $("alerte").classList.add("visible");
+    } finally {
+      bloc.classList.remove("en_cours");
+    }
+  });
+
+  $("btn-quitter").addEventListener("click", () => invoke("quitter"));
+
+  appliquerLangue();
+  majDemarrageWindows();
+  rafraichir();
+  rafraichirJournal();
+  setInterval(rafraichir, 1500);
+  setInterval(rafraichirJournal, 2500);
+</script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+ApiVault_Proxy
+==============
+
+Passerelle locale autonome, compatible OpenAI.
+Ecoute uniquement sur 127.0.0.1 et exige un jeton.
+
+Proxy-Externe/     la passerelle (Rust) et son interface de controle (Tauri).
+                   http://127.0.0.1:3100/v1
+
+Commandes
+---------
+Proxy-Externe\Demarrer.bat            lance la passerelle
+Proxy-Externe\Etat.bat                verifie le service, le jeton et les alias
+Proxy-Externe\Arreter.bat             arrete la passerelle
+Proxy-Externe\Autostart-Activer.bat   demarrage automatique (mode discret)
+Proxy-Externe\Autostart-Desactiver.bat
+
+La specification du produit est dans SPECIFICATION.md.
+Le detail du projet est dans Proxy-Externe\LISEZ-MOI.txt.

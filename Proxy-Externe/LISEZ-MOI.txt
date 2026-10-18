@@ -1,0 +1,178 @@
+ApiVault_Proxy - version 0.4
+============================
+
+Passerelle locale compatible OpenAI.
+Un seul executable autonome : ni Python, ni Docker, ni Node.
+
+Voyant d'etat
+-------------
+Vert          au moins un fournisseur a repondu : le LLM est joignable.
+Orange        le service tourne mais aucun modele n'est disponible.
+Bleu clignotant  verification des fournisseurs en cours.
+Gris          service arrete.
+
+Le voyant ne dit donc pas seulement « l'application est lancee », mais bien
+« un modele repond ».
+
+Pool de cibles
+--------------
+Chaque couple fournisseur/modele porte un etat :
+
+  sain       a repondu, il est prefere dans l'ordre de l'alias
+  non teste  jamais interroge, ou remis en jeu manuellement
+  en pause   rate limite ou erreur passagere : retour automatique
+             (30 s, puis 60, 120, 240, 300 s au maximum)
+  en panne   cle refusee ou modele introuvable : correction manuelle
+  epuise     credits termines : correction manuelle
+
+Une cible n'est jamais supprimee : elle change d'etat.
+Une pause expiree revient en jeu toute seule (boucle de reconciliation,
+toutes les 30 s) et l'etat est conserve d'un demarrage a l'autre.
+
+Aucune verification n'est faite au demarrage : la passerelle reprend
+l'etat enregistre lors de la derniere session (%APPDATA%\ApiVault_Proxy\
+etat-pool.json). C'est instantane et cela ne consomme aucun quota.
+L'interface indique « Verifie il y a X ». Une verification reelle se
+declenche toute seule si un appel echoue (au plus une par minute), et
+reste disponible a la demande avec « Rafraichir ».
+
+Bouton « Rafraichir »
+---------------------
+Il remet les etats a « non teste » puis interroge vraiment chaque
+fournisseur (une requete minimale). L'icone tourne pendant l'operation.
+Le bouton « Réessayer » d'une cible fait la meme chose pour elle seule.
+
+Changer une cle API
+-------------------
+1. Dans la fenetre : bouton « Gestion »
+   Un panneau liste tous les fournisseurs et permet de saisir une nouvelle
+   cle, de l'effacer ou de modifier ses adresses. La cle est ecrite dans
+   cles.env et appliquee immediatement (aucun redemarrage).
+
+2. Changer-Cle.bat
+   Meme chose en dehors de l'application : menu OpenRouter / DeepSeek /
+   NVIDIA, saisie invisible, mise a jour de cles.env et redemarrage.
+
+3. A la main : ouvrir cles.env, remplacer la ligne
+       OPENROUTER_KEY=...
+   puis Arreter.bat et Demarrer.bat.
+
+Adresses multiples par fournisseur
+----------------------------------
+Un fournisseur peut avoir plusieurs adresses. Dans le panneau « Gestion »,
+chaque adresse a une case a cocher : celle qui est cochee est essayee en
+premier, les autres servent de secours si elle ne repond pas.
+
+Les adresses sont aussi stockees dans cles.env :
+
+    OPENROUTER_URLS=https://openrouter.ai/api/v1
+    DEEPSEEK_URLS=https://api.deepseek.com/v1,https://api.deepseek.com
+
+L'adresse cochee dans l'interface est utilisee par defaut. Si elle ne repond
+pas (erreur reseau), la suivante est essayee automatiquement pour la meme
+requete.
+Sans variable *_URLS, les adresses integrees sont utilisees.
+
+Interface
+---------
+- Bandeau fixe en haut : nom, etat du service et modele par defaut restent
+  visibles pendant le defilement.
+- Le modele actuellement joignable est affiche en haut, en vert.
+- Bouton « EN / FR » en haut a gauche : bascule toute l'interface.
+- Des infobulles permanentes expliquent chaque element au survol (et au
+  clavier) ; ce ne sont plus les titres natifs du navigateur.
+- « Gestion » ouvre le panneau des cles et des adresses.
+- Cliquer sur la ligne d'un modele le definit comme modele par defaut
+  (etoile). Le choix est conserve et utilise au prochain demarrage.
+- « Copier la configuration client » copie l'adresse, le jeton et le
+  modele choisi (ou « defaut » si aucun choix) dans le presse-papiers.
+- Chaque fournisseur a un bouton « Tester » qui le verifie tout de suite.
+- Chaque modele porte un badge « gratuit » ou « payant ».
+- « Super IA » est visible en mode desactive, avec la mention « bientot ».
+- L'effacement d'une cle demande deux clics : le premier change le bouton en
+  « Confirmer », le second efface. Le message revient a zero apres 2,5 s.
+
+Demarrage avec Windows
+----------------------
+La case « Demarrer avec Windows » cree une tache planifiee Windows :
+l'application se lance 20 secondes apres l'ouverture de session, reduite
+dans la zone de notification, sans afficher de fenetre. La case lit l'etat
+reel de la tache : elle ne peut donc pas afficher un reglage qui n'existe pas.
+Decocher supprime la tache.
+
+La couleur de l'icone de notification suit l'etat reel :
+  vert     le service tourne et au moins un modele repond
+  orange   le service tourne mais aucun modele ne repond
+  rouge    le service est arrete
+Une notification Windows previent (au plus une fois par quart d'heure)
+lorsque plus aucun modele ne repond, et l'infobulle de l'icone donne le
+nombre de modeles joignables.
+
+Utilisation
+-----------
+1. Demarrer.bat             lance la passerelle et ouvre la fenetre de controle
+2. Etat.bat                 verifie le service, le jeton et les alias
+3. Rafraichir.bat           interroge de nouveau tous les fournisseurs
+4. Changer-Cle.bat          remplace une cle API et redemarre
+5. Arreter.bat              arrete la passerelle
+6. Autostart-Activer.bat    demarrage automatique a l'ouverture de session
+   Autostart-Desactiver.bat retire ce demarrage automatique
+
+Adresse pour les clients :  http://127.0.0.1:3100/v1
+Jeton : contenu dans cles.env, ligne PROXY_MASTER_KEY
+Le bouton « Voir » de la fenetre affiche le jeton en clair (local uniquement).
+
+Fermer la fenetre de controle n'arrete pas le service : il continue en
+arriere-plan. Relancer Demarrer.bat (ou l'application) reaffiche simplement
+la fenetre de l'instance deja active.
+
+API d'administration (jeton obligatoire)
+----------------------------------------
+GET  /admin/pool            etat detaille des alias et des cibles
+POST /admin/rafraichir      remise a zero puis interrogation reelle
+POST /admin/requalifier     remise a zero seule (tout ou une cible)
+GET  /health                etat du service
+GET  /v1/models             alias disponibles
+
+Fichiers
+--------
+cles.env                   cles API locales (droits restreints, ne pas partager)
+cles.env.bak               copie de securite automatique avant chaque modification
+src/index.html             interface de controle
+src-tauri/src/main.rs      application Tauri (icone, fenetre, commandes)
+src-tauri/src/serveur.rs   passerelle HTTP, alias, streaming, sondage
+src-tauri/src/pool.rs      etats du pool, pauses, requalification
+src-tauri/src/config.rs    lecture de cles.env et table des alias
+
+%APPDATA%\ApiVault_Proxy\journal.log       journal des requetes (2 Mo max)
+%APPDATA%\ApiVault_Proxy\etat-pool.json    etat des cibles (persistant)
+
+Compilation
+-----------
+cd src-tauri
+cargo build --release
+
+Notes
+-----
+- Le service n'ecoute que sur 127.0.0.1 : rien n'est visible depuis le reseau.
+- On ne bascule jamais apres le premier octet : le client ne voit qu'une reponse.
+- Les cibles en panne ou epuisees ne sont pas essayees tant qu'on ne les
+  requalifie pas : cela evite de payer un aller-retour inutile a chaque appel.
+- Le sondage envoie une requete de quelques jetons : il consomme un minimum
+  de quota, c'est volontaire.
+
+Nouveautes 0.4
+--------------
+- Infobulles permanentes (maison, pas le titre natif) sur les elements fixes
+  et dynamiques, en FR et EN.
+- Double confirmation reelle pour l'effacement d'une cle (etat conserve entre
+  les deux clics).
+- Clic sur un modele = modele par defaut, avec etoile, ligne surlignee et
+  persistance dans cles.env (PROXY_MODELE_PREFERE).
+- Le modele prefere est place en tete des alias « defaut » et « rapide » ; un
+  modele payant ne rentre pas dans les alias gratuits.
+- Gemma 4 31B reste present mais passe en dernier recours (429 frequents).
+- Bandeau fixe avec nom, etat et modele par defaut.
+- « Super IA » visible mais desactive (prevue pour 0.5).
+- Tests unitaires Rust sur la table des alias, la detection gratuit/payant et
+  l'ordre du pool.
