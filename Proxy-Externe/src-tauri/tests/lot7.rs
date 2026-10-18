@@ -123,14 +123,19 @@ impl Drop for Banc {
 }
 
 fn preparer(nom: &str, port: u16, url_amont: u16) -> Banc {
+    preparer_avec_plafond(nom, port, url_amont, 0)
+}
+
+/// Meme banc, avec un plafond mensuel non nul (partie B).
+fn preparer_avec_plafond(nom: &str, port: u16, url_amont: u16, plafond: u64) -> Banc {
     let dossier = temp_dir();
     let chemin = dossier.join("cles.env");
     let amont = format!("http://127.0.0.1:{}", url_amont);
     fs::write(
         &chemin,
         format!(
-            "PROXY_PORT={}\nPROXY_MASTER_KEY={}\nPROXY_PLAFOND_MENSUEL=0\nDEEPSEEK_KEY=test\nDEEPSEEK_URLS={}\nOPENROUTER_KEY=test\nOPENROUTER_URLS={}\n",
-            port, JETON, amont, amont
+            "PROXY_PORT={}\nPROXY_MASTER_KEY={}\nPROXY_PLAFOND_MENSUEL={}\nDEEPSEEK_KEY=test\nDEEPSEEK_URLS={}\nOPENROUTER_KEY=test\nOPENROUTER_URLS={}\n",
+            port, JETON, plafond, amont, amont
         ),
     )
     .unwrap();
@@ -317,5 +322,95 @@ async fn non_flux_sans_usage_donne_une_estimation_non_nulle() {
         ligne["tokens_out"].as_u64().unwrap_or(0) > 0,
         "la sortie doit etre estimee, recu : {}",
         ligne["tokens_out"]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Partie B — M-2 : un octet invalide ne doit pas desactiver le plafond
+// ---------------------------------------------------------------------------
+
+/// Deux lignes valides encadrent une ligne contenant un octet 0xFF.
+///
+/// C'est ce que produit une coupure en plein milieu d'un caractere UTF-8 : le
+/// fichier n'est plus lisible comme du texte, mais chaque ligne reste un
+/// enregistrement independant. La deuxieme ligne valide est la pour prouver
+/// qu'on ne s'arrete pas a la premiere ligne fautive.
+fn fichier_avec_octet_invalide(chemin: &std::path::Path) {
+    let premiere = serde_json::to_string(&{
+        let mut e = metriques::Enregistrement::nouveau("avant", "defaut");
+        e.tokens_in = 200;
+        e.tokens_out = 100;
+        e.estime = false;
+        e
+    })
+    .unwrap();
+    let derniere = serde_json::to_string(&{
+        let mut e = metriques::Enregistrement::nouveau("apres", "defaut");
+        e.tokens_in = 40;
+        e.tokens_out = 20;
+        e.estime = false;
+        e
+    })
+    .unwrap();
+
+    let mut octets = Vec::new();
+    octets.extend_from_slice(premiere.as_bytes());
+    octets.push(b'\n');
+    octets.extend_from_slice(b"{\"id\":\"abime\",\"alias\":\"defa");
+    octets.push(0xFF);
+    octets.push(0xFE);
+    octets.extend_from_slice(b"ult\"}\n");
+    octets.extend_from_slice(derniere.as_bytes());
+    octets.push(b'\n');
+
+    fs::write(chemin, octets).unwrap();
+}
+
+#[test]
+fn octet_invalide_ignore_la_ligne_mais_garde_les_totaux() {
+    let dossier = temp_dir();
+    let chemin = dossier.join("metriques-2026-10.jsonl");
+    fichier_avec_octet_invalide(&chemin);
+
+    let totaux = metriques::totaliser_fichier(&chemin, "2026-10")
+        .expect("un octet invalide ne doit pas rendre le mois illisible");
+
+    assert_eq!(totaux.requetes, 2, "les deux lignes valides sont comptees");
+    assert_eq!(totaux.entrees, 240);
+    assert_eq!(totaux.sorties, 120);
+    assert_eq!(totaux.lignes_illisibles, 1, "la ligne abimee est comptee");
+    assert_eq!(totaux.periode, "2026-10");
+    let _ = fs::remove_dir_all(&dossier);
+}
+
+#[tokio::test]
+async fn octet_invalide_ne_desactive_pas_le_plafond() {
+    let _garde = VERROU_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let (port_amont, compte) = amont_texte(JSON_SANS_USAGE, "application/json", 200);
+    let port = port_libre();
+    let banc = preparer_avec_plafond("octet-invalide", port, port_amont, 300);
+
+    // Le mois contient deja 300 tokens consommes, plus une ligne abimee.
+    // Avant le correctif, la lecture en texte echouait, la verification du
+    // plafond etait sautee et la requete partait chez le fournisseur.
+    fs::create_dir_all(banc.donnees()).unwrap();
+    fichier_avec_octet_invalide(&chemin_mesures(&banc));
+
+    banc.service.demarrer();
+    let client = client();
+    attendre_sante(&client, port).await;
+
+    let reponse = demander(&client, &banc, false).await;
+    assert_eq!(
+        reponse.status(),
+        reqwest::StatusCode::TOO_MANY_REQUESTS,
+        "le plafond doit rester actif malgre l'octet invalide"
+    );
+    let corps: Value = reponse.json().await.expect("corps JSON");
+    assert_eq!(corps["error"]["code"], "plafond_atteint");
+    assert_eq!(
+        compte.load(Ordering::SeqCst),
+        0,
+        "le fournisseur ne doit pas etre appele : le plafond est atteint"
     );
 }

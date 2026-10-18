@@ -159,8 +159,14 @@ impl Totaux {
 ///
 /// Un fichier absent rend des totaux a zero (premier mois, rien a mesurer).
 /// Une ligne illisible est ignoree et comptee, jamais fatale.
+///
+/// LOT 7, M-2 : lecture en octets, jamais en texte. Une coupure en plein
+/// caractere UTF-8, ou une edition manuelle, ne doit pas rendre le mois entier
+/// illisible : elle n'abime qu'une ligne, et ce sont bien les autres qui
+/// portent la consommation. Une erreur `Err` est reservee aux vraies erreurs
+/// d'entree-sortie (et non a un contenu inattendu).
 pub fn totaliser_fichier(chemin: &Path, periode: &str) -> io::Result<Totaux> {
-    let contenu = match std::fs::read_to_string(chemin) {
+    let octets = match std::fs::read(chemin) {
         Ok(c) => c,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Totaux::vide(periode)),
         Err(e) => return Err(e),
@@ -170,7 +176,10 @@ pub fn totaliser_fichier(chemin: &Path, periode: &str) -> io::Result<Totaux> {
     let mut alias: BTreeMap<String, Detail> = BTreeMap::new();
     let mut modeles: BTreeMap<String, Detail> = BTreeMap::new();
 
-    for ligne in contenu.lines() {
+    for ligne in octets.split(|o| *o == b'\n') {
+        // Les octets invalides deviennent U+FFFD : la ligne ne parses plus, elle
+        // est comptee comme illisible et le reste du fichier est intact.
+        let ligne = String::from_utf8_lossy(ligne);
         let ligne = ligne.trim();
         if ligne.is_empty() {
             continue;
