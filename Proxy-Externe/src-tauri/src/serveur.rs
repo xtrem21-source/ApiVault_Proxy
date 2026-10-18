@@ -1630,7 +1630,7 @@ async fn pool_requalifier(
     let valeur: Value = if corps.is_empty() {
         json!({})
     } else {
-        serde_json::from_slice(&corps).unwrap_or_else(|_| json!({}))
+        serde_json::from_slice(sans_bom(&corps)).unwrap_or_else(|_| json!({}))
     };
 
     let fournisseur = valeur.get("fournisseur").and_then(|v| v.as_str());
@@ -1740,6 +1740,15 @@ async fn chat(
     reponse
 }
 
+/// Retire une eventuelle marque d'ordre des octets UTF-8 (EF BB BF).
+///
+/// Le BOM n'appartient pas au document JSON ; pourtant plusieurs editeurs et
+/// clients Windows en prependent un. Sans ce retrait, `serde_json` echoue des
+/// le premier octet et le proxy rend 400 alors que le corps est valide.
+fn sans_bom(octets: &[u8]) -> &[u8] {
+    octets.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(octets)
+}
+
 async fn chat_interne(
     app: Arc<AppState>,
     entetes: HeaderMap,
@@ -1764,7 +1773,7 @@ async fn chat_interne(
         return erreur_jeton();
     }
 
-    let mut payload: Value = match serde_json::from_slice(&corps) {
+    let mut payload: Value = match serde_json::from_slice(sans_bom(&corps)) {
         Ok(v) => v,
         Err(e) => {
             return erreur_json(

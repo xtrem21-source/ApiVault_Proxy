@@ -560,3 +560,57 @@ async fn f_amont_lent_partout_donne_504_dans_le_budget() {
         "au moins une cible doit avoir ete tentee"
     );
 }
+
+// ---------------------------------------------------------------------------
+// h) BOM UTF-8 : un corps precede de EF BB BF doit etre accepte
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn h_corps_avec_bom_utf8_est_accepte() {
+    let _verrou = VERROU.lock().await;
+    let factice = demarrer_factice(Comportement::Succes).await;
+    let banc = demarrer("bom", JETON, &factice.base, &factice.base).await;
+
+    // Certains editeurs et clients Windows prependent un BOM UTF-8 au JSON.
+    // Le BOM n'appartient pas au document : il doit etre retire avant lecture.
+    let corps = format!("\u{FEFF}{}", corps_chat("rapide", false));
+
+    let reponse = client()
+        .post(banc.url("/v1/chat/completions"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {}", JETON))
+        .body(corps.clone())
+        .send()
+        .await
+        .unwrap();
+    let etat = reponse.status();
+    let texte = reponse.text().await.unwrap();
+    assert_eq!(
+        etat,
+        StatusCode::OK,
+        "un BOM UTF-8 ne doit pas faire rejeter le corps : {texte}"
+    );
+    assert_eq!(
+        factice.appels.load(Ordering::SeqCst),
+        1,
+        "le corps doit atteindre le fournisseur apres retrait du BOM"
+    );
+
+    // Route soeur : meme tolerance.
+    let soeur = client()
+        .post(banc.url("/chat/completions"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {}", JETON))
+        .body(corps)
+        .send()
+        .await
+        .unwrap();
+    let etat_soeur = soeur.status();
+    let texte_soeur = soeur.text().await.unwrap();
+    assert_eq!(
+        etat_soeur,
+        StatusCode::OK,
+        "le BOM doit aussi etre accepte sur /chat/completions : {texte_soeur}"
+    );
+    assert_eq!(factice.appels.load(Ordering::SeqCst), 2);
+}
