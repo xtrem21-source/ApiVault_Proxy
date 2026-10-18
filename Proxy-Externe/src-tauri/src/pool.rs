@@ -193,7 +193,8 @@ impl Pool {
         let Ok(mut map) = self.etats.lock() else { return };
         let etat = map.entry(Self::cle(cible)).or_default();
         let maintenant = Self::maintenant();
-        // Renseigne quand un 401/403 doit condamner tout le fournisseur.
+        // Renseigne quand un 401 doit condamner tout le fournisseur. Un 403
+        // n'est qu'une pause de la cible (LOT 7, m-3).
         let mut condamner: Option<u16> = None;
 
         etat.ko += 1;
@@ -203,16 +204,29 @@ impl Pool {
         etat.repris = false;
 
         match statut_http {
-            Some(code @ (401 | 403)) => {
+            Some(401) => {
                 // Cle invalide : ce n'est pas le modele qui est en cause mais
-                // tout le fournisseur. Toutes ses cibles sont condamnees.
+                // tout le fournisseur. Toutes ses cibles sont condamnees, et
+                // seule une correction manuelle les remet en jeu.
                 etat.statut = Statut::EnPanne;
                 etat.jusqu_a = None;
                 etat.erreur = Some(format!(
                     "cle invalide ({}) : fournisseur {}",
-                    code, cible.fournisseur
+                    401, cible.fournisseur
                 ));
-                condamner = Some(code);
+                condamner = Some(401);
+            }
+            Some(403) => {
+                // LOT 7, m-3 : un 403 n'est pas une cle morte. Droits, quota,
+                // geographie : c'est passager et propre a la cible. Pause
+                // temporaire, reprise automatique par `reconcilier` ; le reste
+                // du fournisseur continue de servir.
+                etat.statut = Statut::EnPause;
+                etat.jusqu_a = Some(maintenant + Self::pause_ms(etat.echecs));
+                etat.erreur = Some(format!(
+                    "acces refuse (403) : fournisseur {}",
+                    cible.fournisseur
+                ));
             }
             Some(402) => {
                 etat.statut = Statut::Epuise;
@@ -565,7 +579,7 @@ mod tests {
     }
 
     #[test]
-    fn un_403_condamne_aussi_le_fournisseur() {
+    fn un_403_met_la_cible_en_pause_sans_condamner() {
         let touche = cible("modele-touche");
         let voisin = cible("modele-voisin");
         let mut etats = HashMap::new();
@@ -578,8 +592,33 @@ mod tests {
 
         pool.enregistrer_echec(&touche, Some(403), "forbidden");
 
+        {
+            let map = pool.etats.lock().unwrap();
+            // LOT 7, m-3 : un 403 (droits, quota, geographie) est un refus
+            // passager, pas une cle morte. Pause temporaire, reprise par
+            // `reconcilier`, et le reste du fournisseur reste utilisable.
+            assert_eq!(map[&Pool::cle(&touche)].statut, Statut::EnPause);
+            assert!(
+                map[&Pool::cle(&touche)].jusqu_a.is_some(),
+                "une pause doit avoir une echeance"
+            );
+            assert_eq!(
+                map[&Pool::cle(&voisin)].statut,
+                Statut::Sain,
+                "un 403 ne doit plus condamner tout le fournisseur"
+            );
+        }
+
+        // La pause arrive a terme : `reconcilier` remet la cible en jeu.
+        {
+            let mut map = pool.etats.lock().unwrap();
+            map.get_mut(&Pool::cle(&touche)).unwrap().jusqu_a =
+                Some(Pool::maintenant().saturating_sub(1));
+        }
+        assert_eq!(pool.reconcilier(), 1);
         let map = pool.etats.lock().unwrap();
-        assert_eq!(map[&Pool::cle(&voisin)].statut, Statut::EnPanne);
+        assert_eq!(map[&Pool::cle(&touche)].statut, Statut::Inconnu);
+        assert_eq!(map[&Pool::cle(&touche)].jusqu_a, None);
     }
 
     #[test]

@@ -52,11 +52,23 @@ pub enum ErreurCoffre {
 impl std::fmt::Display for ErreurCoffre {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ErreurCoffre::Dpapi { operation, code } => write!(
-                f,
-                "{} refusee par Windows (code {}). Le coffre appartient-il a un autre compte Windows ?",
-                operation, code
-            ),
+            ErreurCoffre::Dpapi { operation, code } => {
+                // c-1 : le code Windows est donne en decimal et en hexadecimal
+                // (forme citee par la documentation Microsoft), et le cas 5 est
+                // nomme : c'est celui d'un refus de droits sur le dossier.
+                write!(
+                    f,
+                    "{} refusee par Windows (code {} / 0x{:08X}). Le coffre appartient-il a un autre compte Windows ?",
+                    operation, code, code
+                )?;
+                if *code == 5 {
+                    write!(
+                        f,
+                        " Code 5 : acces refuse, verifiez les droits du dossier (icacls)."
+                    )?;
+                }
+                Ok(())
+            }
             ErreurCoffre::Base64(detail) => write!(
                 f,
                 "coffre corrompu : le bloc chiffre n'est pas du base64 valide ({})",
@@ -288,5 +300,22 @@ mod tests {
     fn en_tete_seul_donne_une_erreur_claire() {
         let err = dechiffrer(&format!("{}\n", EN_TETE)).unwrap_err();
         assert!(err.to_string().contains("corrompu"), "message : {}", err);
+    }
+
+    #[test]
+    fn un_refus_dpapi_donne_le_code_windows() {
+        // c-1 : un refus doit etre diagnosticable. Le code est donne en decimal
+        // et en hexadecimal (la forme citee par la documentation Windows) ; le
+        // cas 5 (acces refuse) est nomme, parce que c'est celui d'un refus d'ACL.
+        let err = ErreurCoffre::Dpapi {
+            operation: "dechiffrement",
+            code: 5,
+        };
+        let texte = err.to_string();
+        assert!(texte.contains("refusee par Windows"), "message : {texte}");
+        assert!(texte.contains("dechiffrement"), "message : {texte}");
+        assert!(texte.contains("code 5"), "message : {texte}");
+        assert!(texte.contains("0x00000005"), "message : {texte}");
+        assert!(texte.contains("acces refuse"), "message : {texte}");
     }
 }

@@ -64,9 +64,48 @@ fn amont_texte(corps: &'static str, type_contenu: &'static str, statut: u16) -> 
     (port, compte)
 }
 
+/// Amont factice qui repond le meme corps, mais seulement apres un delai : il
+/// permet de distinguer un horodatage de depart d'un horodatage de fin.
+fn amont_texte_retarde(
+    corps: &'static str,
+    type_contenu: &'static str,
+    statut: u16,
+    delai: Duration,
+) -> (u16, Arc<AtomicUsize>) {
+    let ecoute = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = ecoute.local_addr().unwrap().port();
+    let compte = Arc::new(AtomicUsize::new(0));
+    let compteur = compte.clone();
+    std::thread::spawn(move || {
+        while let Ok((mut flux, _)) = ecoute.accept() {
+            compteur.fetch_add(1, Ordering::SeqCst);
+            let mut tampon = [0u8; 8192];
+            let _ = flux.read(&mut tampon);
+            std::thread::sleep(delai);
+            let reponse = format!(
+                "HTTP/1.1 {} X\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                statut,
+                type_contenu,
+                corps.len(),
+                corps
+            );
+            let _ = flux.write_all(reponse.as_bytes());
+            let _ = flux.flush();
+            let _ = flux.shutdown(std::net::Shutdown::Both);
+        }
+    });
+    (port, compte)
+}
+
 /// Amont SSE : envoie les trames fournies avec un petit delai, comme un vrai
 /// fournisseur, puis ferme.
 fn amont_flux(trames: Vec<String>) -> (u16, Arc<AtomicUsize>) {
+    amont_flux_avec_delai(trames, Duration::from_millis(15))
+}
+
+/// Meme amont, avec un delai choisissable entre deux trames : le test de
+/// coupure client a besoin d'un flux encore ouvert pour le couper.
+fn amont_flux_avec_delai(trames: Vec<String>, delai: Duration) -> (u16, Arc<AtomicUsize>) {
     let ecoute = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = ecoute.local_addr().unwrap().port();
     let compte = Arc::new(AtomicUsize::new(0));
@@ -85,7 +124,7 @@ fn amont_flux(trames: Vec<String>) -> (u16, Arc<AtomicUsize>) {
                     break;
                 }
                 let _ = flux.flush();
-                std::thread::sleep(Duration::from_millis(15));
+                std::thread::sleep(delai);
             }
             let _ = flux.shutdown(std::net::Shutdown::Both);
         }
@@ -413,4 +452,114 @@ async fn octet_invalide_ne_desactive_pas_le_plafond() {
         0,
         "le fournisseur ne doit pas etre appele : le plafond est atteint"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Partie D — m-1 : la mesure est horodatee au depart, pas a la fin
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn horodatage_pris_au_depart_de_la_requete() {
+    let _garde = VERROU_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let (port_amont, _compte) = amont_texte_retarde(
+        JSON_SANS_USAGE,
+        "application/json",
+        200,
+        Duration::from_millis(400),
+    );
+    let port = port_libre();
+    let banc = preparer("horodatage", port, port_amont);
+    banc.service.demarrer();
+    let client = client();
+    attendre_sante(&client, port).await;
+
+    let depart = chrono::Local::now();
+    let reponse = demander(&client, &banc, false).await;
+    assert_eq!(reponse.status(), reqwest::StatusCode::OK);
+    let fin = chrono::Local::now();
+
+    let lignes = attendre_lignes(&banc, 1).await;
+    let horodatage = lignes[0]["horodatage"].as_str().expect("horodatage");
+    let instant = chrono::DateTime::parse_from_rfc3339(horodatage)
+        .expect("horodatage RFC 3339")
+        .with_timezone(&chrono::Local);
+
+    // La requete a dure au moins 400 ms : un horodatage pris a la fin tombe
+    // apres `depart + 400 ms`. Celui du depart tombe dans les premieres ms.
+    assert!(
+        (fin - depart) >= chrono::Duration::milliseconds(350),
+        "l'amont doit avoir retarde la reponse, duree reelle : {:?}",
+        fin - depart
+    );
+    assert!(
+        instant <= depart + chrono::Duration::milliseconds(250),
+        "l'horodatage doit etre celui du depart ({depart}), recu {instant}"
+    );
+    assert!(
+        instant >= depart - chrono::Duration::milliseconds(250),
+        "l'horodatage ne doit pas etre anterieur au depart ({depart}), recu {instant}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Partie D — m-2 : un flux coupe par le client ecrit exactement une ligne
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn flux_coupe_par_le_client_ecrit_une_ligne_unique() {
+    use futures_util::StreamExt;
+
+    let _garde = VERROU_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let trames: Vec<String> = vec![
+        "data: {\"choices\":[{\"delta\":{\"content\":\"debut du flux\"}}]}\n\n".to_string(),
+        "data: {\"choices\":[{\"delta\":{\"content\":\"milieu du flux\"}}]}\n\n".to_string(),
+        "data: {\"choices\":[{\"delta\":{\"content\":\"fin du flux\"}}]}\n\n".to_string(),
+        "data: [DONE]\n\n".to_string(),
+    ];
+    let (port_amont, _compte) = amont_flux_avec_delai(trames, Duration::from_millis(300));
+    let port = port_libre();
+    let banc = preparer("flux-coupe", port, port_amont);
+    banc.service.demarrer();
+    let client = client();
+    attendre_sante(&client, port).await;
+
+    let reponse = client
+        .post(format!("http://127.0.0.1:{}/v1/chat/completions", port))
+        .header("Authorization", format!("Bearer {}", JETON))
+        .header("Content-Type", "application/json")
+        .body(
+            serde_json::json!({
+                "model": "defaut",
+                "stream": true,
+                "messages": [{"role": "user", "content": "raconte une histoire"}],
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .expect("requete flux");
+    assert_eq!(reponse.status(), reqwest::StatusCode::OK);
+
+    let mut corps = reponse.bytes_stream();
+    let premiere = corps.next().await.expect("premiere trame").expect("trame");
+    assert!(!premiere.is_empty(), "une trame doit etre relayee avant la coupure");
+    // Coupure franche : le client abandonne le flux en plein milieu.
+    drop(corps);
+
+    // Le flux est encore ouvert chez l'amont ; la ligne doit tout de meme
+    // apparaitre, ecrite par le filet de securite.
+    let lignes = attendre_lignes(&banc, 1).await;
+    assert_eq!(lignes.len(), 1, "une seule ligne pour un flux coupe");
+    assert_eq!(lignes[0]["flux"], true);
+    assert!(
+        lignes[0]["tokens_out"].as_u64().unwrap_or(0) > 0,
+        "les octets deja relayes doivent etre comptes, recu : {}",
+        lignes[0]["tokens_out"]
+    );
+
+    // Laisse le temps a l'amont de finir : aucune seconde ligne ne doit arriver.
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let apres = lignes_mesures(&banc);
+    assert_eq!(apres.len(), 1, "jamais deux ecritures pour un meme flux");
+    assert_eq!(apres[0]["id"], lignes[0]["id"], "la ligne ne doit pas changer");
 }

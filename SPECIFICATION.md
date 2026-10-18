@@ -245,7 +245,8 @@ bascule. On termine par un événement d'erreur propre.
 | Réponse | État appliqué | Action |
 |---|---|---|
 | 429 | clé `en_pause` (1 min → reset quota) | clé suivante |
-| 401 / 403 | clé `en_panne` | clé suivante + alerte |
+| 401 | clé `en_panne` | clé suivante + alerte |
+| 403 | cible `en_pause` (temporaire, reprise automatique) | cible suivante |
 | 402 | clé `epuise` | clé suivante |
 | 404 | modèle `inconnu` | modèle suivant |
 | 400 (tools/vision) | tag retiré du modèle | modèle suivant |

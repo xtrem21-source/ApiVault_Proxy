@@ -60,8 +60,10 @@ du 18/10/2026, après le sprint 0 d'assainissement.
 - Flux SSE borné : 120 s d'inactivité, 900 s au total, puis événement d'erreur
   au format OpenAI et fermeture.
 - Aucune redirection amont suivie (`Policy::none` sur les deux clients HTTP).
-- Un 401/403 condamne toutes les cibles du fournisseur (« clé invalide ») ;
-  un 404 ne condamne que la cible ; un 429 ou 5xx met la cible en pause 60 s.
+- Un 401 condamne toutes les cibles du fournisseur (« clé invalide », correction
+  manuelle) ; un 403 ne met que la cible en pause temporaire, reprise par
+  `reconcilier` (LOT 7, m-3) ; un 404 ne condamne que la cible ; un 429 ou 5xx
+  met la cible en pause 60 s.
 - Corps limité à 16 MiB, 8 requêtes amont simultanées (sémaphore).
 - Sémaphore plein : réponse immédiate 503 `gateway_busy`, sans mise en file
   d'attente.

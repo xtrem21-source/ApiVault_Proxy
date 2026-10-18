@@ -1666,6 +1666,9 @@ fn identifiant_requete() -> String {
 /// il se termine (`rapporte`) : a cet instant `chat` a deja rendu la reponse.
 #[derive(Debug, Clone, Default)]
 pub struct Mesure {
+    /// Horodatage du depart de la requete (LOT 7, m-1). C'est lui qui decide du
+    /// mois d'imputation, pas l'instant d'ecriture de la ligne.
+    pub horodatage: String,
     pub alias: String,
     pub fournisseur: String,
     pub modele: String,
@@ -1689,12 +1692,22 @@ async fn chat(
     let id = identifiant_requete();
     let debut = Instant::now();
     let mesure = Arc::new(std::sync::Mutex::new(Mesure::default()));
+    {
+        // LOT 7, m-1 : l'horodatage est pris au depart, pas a l'ecriture. Une
+        // requete a cheval sur minuit reste ainsi imputee au mois ou elle a ete
+        // autorisee, celui du controle de plafond.
+        let mut m = mesure.lock().unwrap_or_else(|e| e.into_inner());
+        m.horodatage = crate::metriques::horodatage_maintenant();
+    }
     let mut reponse = chat_interne(app.clone(), entetes, corps, &id, mesure.clone()).await;
     let statut = reponse.status().as_u16();
 
     let m = mesure.lock().unwrap_or_else(|e| e.into_inner()).clone();
     if !m.rapporte {
         let mut e = Enregistrement::nouveau(&id, &m.alias);
+        if !m.horodatage.is_empty() {
+            e.horodatage = m.horodatage.clone();
+        }
         e.fournisseur = m.fournisseur.clone();
         e.modele = m.modele.clone();
         e.statut = statut;
@@ -2228,6 +2241,10 @@ impl RapportFlux {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         let mut e = Enregistrement::nouveau(&self.id, &self.alias);
+        if !m.horodatage.is_empty() {
+            // LOT 7, m-1 : meme regle en flux, l'horodatage vient du depart.
+            e.horodatage = m.horodatage.clone();
+        }
         e.fournisseur = m.fournisseur;
         e.modele = m.modele;
         e.statut = 200;
