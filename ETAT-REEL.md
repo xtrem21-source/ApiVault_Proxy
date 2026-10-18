@@ -77,8 +77,17 @@ Mesure et vue uniquement : aucun plafond, aucun blocage, aucune dépense réelle
 - `tokens_cache` = `prompt_cache_hit_tokens` (DeepSeek) ou
   `cache_read_input_tokens` (Anthropic), 0 quand le fournisseur n'en parle pas.
   `cout_eur` reste `null` : aucun catalogue de prix n'existe encore.
-- `estime` = `true` quand le fournisseur n'a pas rendu d'`usage` (échec amont) :
-  les compteurs sont alors à 0 et la ligne est comptée à part.
+- **Mode estimé** (`estime` = `true`) : dès que le fournisseur ne rend pas
+  d'`usage` exploitable, les compteurs sont estimés au lieu d'être mis à zéro.
+  Règle unique, à 4 octets par token, arrondie au supérieur :
+  `tokens_in` = octets du corps envoyé au fournisseur / 4,
+  `tokens_out` = octets relayés (flux) ou octets de la réponse (hors flux) / 4.
+  Zéro seulement quand aucun octet n'a circulé. Une ligne estimée n'est donc
+  jamais nulle alors que du texte a circulé.
+  Le mode estimé couvre deux cas : réponse sans bloc `usage`, et flux rompu
+  avant l'événement d'`usage` (le compteur d'octets relayés est cumulatif, il
+  ne dépend pas du tampon glissant de 64 KiB). Pour un flux sans `usage`, la
+  ligne est écrite à la fermeture du flux, y compris quand le client coupe.
 - Flux SSE : l'`usage` final est récupéré dans les événements du flux (tampon
   glissant de 64 KiB) et la ligne n'est écrite qu'à la fermeture du flux.
 - Agrégation : `metriques::totaliser_fichier(chemin, periode)` est une fonction

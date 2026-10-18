@@ -1879,6 +1879,11 @@ async fn chat_interne(
 
         let mut corps_up = payload.clone();
         corps_up["model"] = json!(cible.modele);
+        // LOT 7, M-1 : taille du corps reellement envoye au fournisseur. Elle sert
+        // a estimer l'entree quand aucun usage n'est annonce, en flux comme hors flux.
+        let octets_entree = serde_json::to_vec(&corps_up)
+            .map(|v| v.len() as u64)
+            .unwrap_or(0);
         let mut nettoye = false;
 
         loop {
@@ -1962,6 +1967,7 @@ async fn chat_interne(
                                     id: id.to_string(),
                                     alias: alias.nom.clone(),
                                     debut: debut_requete,
+                                    octets_entree,
                                 })),
                             );
                         }
@@ -2023,6 +2029,17 @@ async fn chat_interne(
                                 m.tokens_out = sortie;
                                 m.tokens_cache = cache;
                                 m.usage_vu = true;
+                            }
+                        }
+                        // LOT 7, M-1 : sans usage, on estime a partir des octets
+                        // echanges. Jamais zero quand du texte a circule.
+                        {
+                            let mut m = mesure.lock().unwrap_or_else(|e| e.into_inner());
+                            if !m.usage_vu {
+                                m.tokens_in =
+                                    crate::metriques::estimer_tokens(octets_entree);
+                                m.tokens_out =
+                                    crate::metriques::estimer_tokens(octets.len() as u64);
                             }
                         }
                         return reponse_complete(octets, &alias, &etiquette);
@@ -2155,12 +2172,15 @@ struct RapportFlux {
     id: String,
     alias: String,
     debut: Instant,
+    /// Taille du corps envoye au fournisseur, pour estimer l'entree (LOT 7).
+    octets_entree: u64,
 }
 
 impl RapportFlux {
     /// Appelee une seule fois, quand le flux se termine. L'usage est lu dans
-    /// la fenetre glissante ; absent, la ligne est marquee estimee.
-    fn conclure(&self, tampon: &[u8]) {
+    /// la fenetre glissante ; absent, l'entree et la sortie sont estimees a
+    /// partir des octets (LOT 7, M-1) : jamais zero quand du texte a circule.
+    fn conclure(&self, tampon: &[u8], relayes: u64) {
         let m = self
             .mesure
             .lock()
@@ -2180,7 +2200,13 @@ impl RapportFlux {
                 e.tokens_cache = cache;
                 e.estime = false;
             }
-            None => e.estime = true,
+            None => {
+                // Le flux relaye est du SSE : le total cache est deja dans
+                // `relayes`, et l'entree vient du corps de la requete.
+                e.tokens_in = crate::metriques::estimer_tokens(self.octets_entree);
+                e.tokens_out = crate::metriques::estimer_tokens(relayes);
+                e.estime = true;
+            }
         }
         let _ = self.metriques.enregistrer(&e);
     }
@@ -2199,6 +2225,9 @@ struct EtatFlux {
     /// seulement conserve en vie.
     _gardien: Option<tokio::sync::OwnedSemaphorePermit>,
     tampon: Vec<u8>,
+    /// Octets relayes depuis le debut, hors fenetre glissante : sert a estimer
+    /// quand le flux n'annonce pas d'usage (LOT 7, M-1).
+    relayes: u64,
     rapport: Option<Arc<RapportFlux>>,
 }
 
@@ -2206,8 +2235,17 @@ impl EtatFlux {
     /// Ecrit la ligne de metriques du flux, une seule fois.
     fn conclure(&mut self) {
         if let Some(rapport) = self.rapport.take() {
-            rapport.conclure(&self.tampon);
+            rapport.conclure(&self.tampon, self.relayes);
         }
+    }
+}
+
+impl Drop for EtatFlux {
+    /// Filet de securite (LOT 7, m-2) : une coupure client fait tomber le flux
+    /// sans passer par la fin propre. La ligne est ecrite ici ; `conclure`
+    /// vide `rapport`, donc jamais deux ecritures.
+    fn drop(&mut self) {
+        self.conclure();
     }
 }
 
@@ -2242,6 +2280,7 @@ fn flux_borne_avec(
         journal,
         _gardien: gardien,
         tampon: Vec::new(),
+        relayes: 0,
         rapport,
     };
 
@@ -2275,6 +2314,8 @@ fn flux_borne_avec(
             };
             match tokio::time::timeout(delai, etat.amont.next()).await {
                 Ok(Some(Ok(octets))) => {
+                    // LOT 7, M-1 : compteur cumule, independant de la fenetre.
+                    etat.relayes += octets.len() as u64;
                     // LOT 5 : fenetre glissante pour retrouver l'evenement
                     // final `usage` du flux, sans garder tout le contenu.
                     if etat.rapport.is_some() {

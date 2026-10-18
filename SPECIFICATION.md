@@ -151,6 +151,16 @@ et stable : on ajoute des champs, on n'en retire ni n'en renomme aucun (le LOT 6
 lit le même fichier). Aucune purge n'existe encore ; `cout_eur` reste `null`.
 L'agrégation est `metriques::totaliser_fichier`, exposée par `/admin/metriques`.
 
+**Mode estimé (LOT 7)** — quand le fournisseur ne rend aucun `usage`
+exploitable, `estime` vaut `true` et les compteurs sont **estimés**, jamais
+laissés à zéro alors que du texte a circulé : 4 octets par token, arrondi au
+supérieur, `tokens_in` = octets du corps envoyé / 4, `tokens_out` = octets
+relayés (flux) ou octets de la réponse (hors flux) / 4. Zéro seulement sans
+aucun octet. Cela couvre les réponses sans bloc `usage` et les flux rompus
+avant l'événement d'`usage` (compteur d'octets cumulatif, indépendant du
+tampon de 64 KiB). Le mode estimé est déclaré dans la ligne : les totaux
+séparent toujours requêtes estimées et requêtes exactes.
+
 **Implémenté en v0.5 (LOT 6)** — le plafond réalisé n'est pas le `plafond_jour_eur`
 ci-dessus (aucun prix n'existe encore) mais un **plafond mensuel en tokens** :
 `tokens_in + tokens_out` du mois, réglé par `PROXY_PLAFOND_MENSUEL` (0 =

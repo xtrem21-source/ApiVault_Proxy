@@ -224,6 +224,21 @@ pub fn totaliser_fichier(chemin: &Path, periode: &str) -> io::Result<Totaux> {
     Ok(totaux)
 }
 
+/// Estimation d'un nombre de tokens a partir d'un nombre d'octets.
+///
+/// Quatre octets par token, arrondi au superieur, zero seulement sans octet.
+/// Utilisee quand le fournisseur ne renvoie pas d'`usage` (LOT 7, M-1) : le
+/// proxy n'injecte pas `stream_options.include_usage`, donc beaucoup d'amonts
+/// n'annoncent rien en flux. Mieux vaut une estimation marquee `estime:true`
+/// qu'un zero qui laisserait croire a une consommation nulle.
+pub fn estimer_tokens(octets: u64) -> u64 {
+    if octets == 0 {
+        0
+    } else {
+        (octets + 3) / 4
+    }
+}
+
 /// Champs additifs du plafond mensuel (LOT 6), joints aux totaux.
 ///
 /// L'unite est `entrees + sorties` : le cache est deja compris dans l'entree,
