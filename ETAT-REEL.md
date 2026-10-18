@@ -29,14 +29,18 @@ du 18/10/2026, après le sprint 0 d'assainissement.
 - **Fail-closed** : sans jeton configuré, toute requête reçoit 401.
 - Alias : `gratuit`, `gratuit-secours`, `defaut`, `rapide`.
 - Bascule ordonnée selon l'alias, au plus 3 cibles (1 tentative + 2 bascules).
-- Budget : 45 s pour les tentatives/bascules, 300 s maximum par tentative,
-  900 s pour la requête complète.
+- Budget : 45 s pour les tentatives/bascules, 300 s maximum par tentative.
+  Le flux a ensuite son propre budget de 900 s, qui démarre après les bascules :
+  le pire cas est donc 45 s + 900 s = 945 s, et non 900 s pour la requête
+  complète.
 - Flux SSE borné : 120 s d'inactivité, 900 s au total, puis événement d'erreur
   au format OpenAI et fermeture.
 - Aucune redirection amont suivie (`Policy::none` sur les deux clients HTTP).
 - Un 401/403 condamne toutes les cibles du fournisseur (« clé invalide ») ;
   un 404 ne condamne que la cible ; un 429 ou 5xx met la cible en pause 60 s.
 - Corps limité à 16 MiB, 8 requêtes amont simultanées (sémaphore).
+- Sémaphore plein : réponse immédiate 503 `gateway_busy`, sans mise en file
+  d'attente.
 - `X-Request-Id` (8 caractères hexadécimaux) sur chaque réponse et dans chaque
   ligne de journal rattachée à une requête.
 
