@@ -1143,11 +1143,16 @@ async fn chat(
                     let texte = reponse.text().await.unwrap_or_default();
                     let court = tronquer(&texte, 500);
                     app.journaliser(&format!(
-                        "alias={} cible={}/{} HTTP {} : {}",
+                        "alias={} cible={}/{} HTTP {}{} : {}",
                         alias.nom,
                         cible.fournisseur,
                         cible.modele,
                         statut.as_u16(),
+                        if statut == StatusCode::UNAUTHORIZED || statut == StatusCode::FORBIDDEN {
+                            " (cle invalide : fournisseur condamne)"
+                        } else {
+                            ""
+                        },
                         court.replace('\n', " ")
                     ));
                     app.pool

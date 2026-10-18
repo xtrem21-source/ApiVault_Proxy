@@ -171,6 +171,8 @@ impl Pool {
         let Ok(mut map) = self.etats.lock() else { return };
         let etat = map.entry(Self::cle(cible)).or_default();
         let maintenant = Self::maintenant();
+        // Renseigne quand un 401/403 doit condamner tout le fournisseur.
+        let mut condamner: Option<u16> = None;
 
         etat.ko += 1;
         etat.echecs = etat.echecs.saturating_add(1);
@@ -178,9 +180,16 @@ impl Pool {
         etat.derniere_utilisation = Some(maintenant);
 
         match statut_http {
-            Some(401) | Some(403) => {
+            Some(code @ (401 | 403)) => {
+                // Cle invalide : ce n'est pas le modele qui est en cause mais
+                // tout le fournisseur. Toutes ses cibles sont condamnees.
                 etat.statut = Statut::EnPanne;
                 etat.jusqu_a = None;
+                etat.erreur = Some(format!(
+                    "cle invalide ({}) : fournisseur {}",
+                    code, cible.fournisseur
+                ));
+                condamner = Some(code);
             }
             Some(402) => {
                 etat.statut = Statut::Epuise;
@@ -206,6 +215,20 @@ impl Pool {
             }
             // 400/422 : la requete est en cause, pas la cible.
             _ => {}
+        }
+
+        if let Some(code) = condamner {
+            let prefixe = format!("{}/", cible.fournisseur);
+            for (cle, autre) in map.iter_mut() {
+                if cle.starts_with(&prefixe) {
+                    autre.statut = Statut::EnPanne;
+                    autre.jusqu_a = None;
+                    autre.erreur = Some(format!(
+                        "cle invalide ({}) : fournisseur {}",
+                        code, cible.fournisseur
+                    ));
+                }
+            }
         }
 
         drop(map);
@@ -442,5 +465,80 @@ mod tests {
         let ordre = pool.ordre(&alias);
         assert_eq!(ordre.len(), 1);
         assert_eq!(ordre[0].modele, bon.modele);
+    }
+
+    #[test]
+    fn une_cle_invalide_condamne_tout_le_fournisseur() {
+        let touche = cible("modele-touche");
+        let meme_fournisseur = cible("modele-voisin");
+        let autre_fournisseur = Cible {
+            fournisseur: "deepseek".to_string(),
+            modele: "deepseek-chat".to_string(),
+        };
+        let mut etats = HashMap::new();
+        etats.insert(Pool::cle(&touche), etat(Statut::Sain, 10));
+        etats.insert(Pool::cle(&meme_fournisseur), etat(Statut::Sain, 10));
+        etats.insert(Pool::cle(&autre_fournisseur), etat(Statut::Sain, 10));
+        let pool = Pool {
+            etats: Mutex::new(etats),
+            chemin: None,
+        };
+
+        pool.enregistrer_echec(&touche, Some(401), "invalid api key");
+
+        let map = pool.etats.lock().unwrap();
+        assert_eq!(map[&Pool::cle(&touche)].statut, Statut::EnPanne);
+        assert_eq!(
+            map[&Pool::cle(&meme_fournisseur)].statut,
+            Statut::EnPanne,
+            "toutes les cibles du fournisseur doivent tomber"
+        );
+        assert_eq!(
+            map[&Pool::cle(&autre_fournisseur)].statut,
+            Statut::Sain,
+            "un autre fournisseur ne doit pas etre condamne"
+        );
+        assert!(map[&Pool::cle(&touche)]
+            .erreur
+            .as_deref()
+            .unwrap_or("")
+            .contains("cle invalide"));
+    }
+
+    #[test]
+    fn un_403_condamne_aussi_le_fournisseur() {
+        let touche = cible("modele-touche");
+        let voisin = cible("modele-voisin");
+        let mut etats = HashMap::new();
+        etats.insert(Pool::cle(&touche), etat(Statut::Sain, 10));
+        etats.insert(Pool::cle(&voisin), etat(Statut::Sain, 10));
+        let pool = Pool {
+            etats: Mutex::new(etats),
+            chemin: None,
+        };
+
+        pool.enregistrer_echec(&touche, Some(403), "forbidden");
+
+        let map = pool.etats.lock().unwrap();
+        assert_eq!(map[&Pool::cle(&voisin)].statut, Statut::EnPanne);
+    }
+
+    #[test]
+    fn un_404_ne_touche_que_la_cible() {
+        let touche = cible("modele-absent");
+        let voisin = cible("modele-voisin");
+        let mut etats = HashMap::new();
+        etats.insert(Pool::cle(&touche), etat(Statut::Sain, 10));
+        etats.insert(Pool::cle(&voisin), etat(Statut::Sain, 10));
+        let pool = Pool {
+            etats: Mutex::new(etats),
+            chemin: None,
+        };
+
+        pool.enregistrer_echec(&touche, Some(404), "model not found");
+
+        let map = pool.etats.lock().unwrap();
+        assert_eq!(map[&Pool::cle(&touche)].statut, Statut::EnPanne);
+        assert_eq!(map[&Pool::cle(&voisin)].statut, Statut::Sain);
     }
 }
