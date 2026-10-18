@@ -395,6 +395,60 @@ pub fn dossier_a_restreindre(chemin_cles: &Path, dossier_donnees: &Path) -> Opti
     }
 }
 
+/// Resultat de la migration d'un fichier de cles encore en clair.
+#[derive(Debug, PartialEq)]
+pub enum Migration {
+    /// Aucun fichier : rien a migrer.
+    Absent,
+    /// Deja chiffre (en-tete `APIVAULT-COFFRE-1`).
+    DejaChiffre,
+    /// Reecrit chiffre a l'instant.
+    Chiffre,
+    /// Hors du dossier de donnees : jamais reecrit.
+    Externe,
+    /// Ecriture impossible : le fichier d'origine est intact.
+    Echec(String),
+}
+
+/// Reecrit chiffre un fichier de cles encore en clair, au demarrage.
+///
+/// Sans cela, une installation d'une version anterieure garderait ses cles en
+/// clair tant qu'aucune cle n'est enregistree : la promesse « plus de cle en
+/// clair sur le disque » ne serait vraie qu'apres une modification. Le fichier
+/// n'est reecrit que s'il vit dans le dossier de donnees de l'application ; un
+/// chemin externe (`APIVAULT_CLE_ENV`) n'est jamais touche. L'ecriture passe par
+/// `coffre::ecrire_atomique` : en cas d'echec, l'ancien fichier reste en place.
+pub fn migrer_au_demarrage(chemin: &Path, dossier_donnees: &Path) -> Migration {
+    let brut = match std::fs::read(chemin) {
+        Ok(brut) => brut,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Migration::Absent,
+        Err(e) => return Migration::Echec(e.to_string()),
+    };
+    if brut.starts_with(coffre::EN_TETE.as_bytes()) {
+        return Migration::DejaChiffre;
+    }
+    if dossier_a_restreindre(chemin, dossier_donnees).is_none() {
+        return Migration::Externe;
+    }
+    let texte = match String::from_utf8(brut) {
+        Ok(texte) => texte,
+        Err(e) => return Migration::Echec(format!("contenu non UTF-8 ({})", e)),
+    };
+    match coffre::ecrire_atomique(chemin, &texte) {
+        Ok(()) => Migration::Chiffre,
+        Err(e) => Migration::Echec(e.to_string()),
+    }
+}
+
+/// Charge la configuration puis migre le fichier de cles s'il est encore en
+/// clair. C'est l'ordre du demarrage : les cles sont en memoire avant que le
+/// disque ne soit mis au propre, donc une migration ratee ne perd rien.
+pub fn charger_et_migrer() -> (Config, Migration) {
+    let cfg = Config::charger();
+    let migration = migrer_au_demarrage(&cfg.chemin_cles, &dossier_donnees());
+    (cfg, migration)
+}
+
 /// Ordre de recherche :
 /// 1. variable d'environnement APIVAULT_CLE_ENV
 /// 2. dossier de l'executable puis 4 parents (mode developpement)

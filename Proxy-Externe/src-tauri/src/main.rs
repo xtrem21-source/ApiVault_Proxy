@@ -441,7 +441,7 @@ fn main() {
     let debut = std::time::Instant::now();
     let _ = serveur::ms_depuis_demarrage();
 
-    let configuration = config::Config::charger();
+    let (configuration, migration) = config::charger_et_migrer();
     let ms_config = debut.elapsed().as_millis();
     let port = configuration.port;
     let jeton = configuration.jeton.clone();
@@ -454,6 +454,26 @@ fn main() {
     let ms_pool = debut.elapsed().as_millis();
     etat_partage.journaliser(&format!("demarrage config : {} ms", ms_config));
     etat_partage.journaliser(&format!("demarrage pool : {} ms", ms_pool));
+
+    // LOT 6 : une installation anterieure peut avoir un fichier de cles en
+    // clair. Il est mis au coffre ici, apres le chargement, pour que la
+    // promesse « plus de cle en clair sur le disque » soit vraie des le premier
+    // demarrage et pas seulement apres une modification. Best-effort : en cas
+    // d'echec le fichier d'origine reste en place et le journal le dit.
+    match migration {
+        config::Migration::Chiffre => etat_partage.journaliser(
+            "fichier de cles en clair : migration chiffree au demarrage",
+        ),
+        config::Migration::Externe => etat_partage.journaliser(&format!(
+            "fichier de cles externe : migration non appliquee ({})",
+            chemin_cles.display()
+        )),
+        config::Migration::Echec(ref e) => etat_partage.journaliser(&format!(
+            "migration du fichier de cles non appliquee, fichier d'origine conserve : {}",
+            e
+        )),
+        config::Migration::Absent | config::Migration::DejaChiffre => {}
+    }
 
     // Restriction des droits : retrait de l'heritage, seul le compte courant
     // garde le controle. Un echec n'empeche pas de demarrer, mais il est

@@ -2157,6 +2157,9 @@ impl EtatFlux {
     }
 }
 
+// Signature historique conservee pour les tests du corps de flux ; le relais
+// de production passe par `flux_borne_avec`, qui emporte le rapport de mesures.
+#[cfg(test)]
 fn flux_borne(
     reponse: reqwest::Response,
     etiquette: String,
@@ -2269,16 +2272,6 @@ fn flux_borne_avec(
                 }
             }
     })
-}
-
-fn reponse_flux(
-    reponse: reqwest::Response,
-    alias: &Alias,
-    etiquette: &str,
-    journal: Option<Arc<dyn Fn(String) + Send + Sync>>,
-    gardien: tokio::sync::OwnedSemaphorePermit,
-) -> Response {
-    reponse_flux_avec(reponse, alias, etiquette, journal, gardien, None)
 }
 
 fn reponse_flux_avec(
