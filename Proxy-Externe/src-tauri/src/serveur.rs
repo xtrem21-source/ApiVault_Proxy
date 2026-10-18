@@ -31,6 +31,14 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const FLUX_INACTIVITE: Duration = Duration::from_secs(120);
 /// Duree totale maximale d'un flux, en-tetes comprises.
 const FLUX_DUREE_MAX: Duration = Duration::from_secs(900);
+/// Fenetre totale accordee aux tentatives et aux bascules (en-tetes comprises).
+const BUDGET_BASCULES: Duration = Duration::from_secs(45);
+/// Duree maximale d'une requete complete, flux compris.
+const BUDGET_REQUETE: Duration = Duration::from_secs(900);
+/// Plafond absolu d'une tentative isolee, meme si le budget de bascule le permet.
+const DELAI_CIBLE: Duration = Duration::from_secs(300);
+/// Au plus 3 cibles essayees : 1 tentative + 2 bascules.
+const CIBLES_MAX: usize = 3;
 
 pub struct AppState {
     pub cfg: Config,
@@ -988,12 +996,18 @@ async fn chat(
         );
     }
 
-    // Budget : au plus 3 cibles et 45 s par requete.
-    for (rang, cible) in ordre.iter().take(3).enumerate() {
-        if rang > 0 && debut_requete.elapsed() > std::time::Duration::from_secs(45) {
+    // Budget : au plus 3 cibles (1 tentative + 2 bascules) et 45 s de bascule.
+    for (_rang, cible) in ordre.iter().take(CIBLES_MAX).enumerate() {
+        let restant_bascule = BUDGET_BASCULES.saturating_sub(debut_requete.elapsed());
+        if restant_bascule.is_zero() {
             app.journaliser(&format!(
-                "alias={} : budget de 45 s atteint, arret des bascules",
-                alias.nom
+                "alias={} : budget de {} s epuise, arret des bascules",
+                alias.nom,
+                BUDGET_BASCULES.as_secs()
+            ));
+            derniere = Some((
+                StatusCode::GATEWAY_TIMEOUT,
+                "Budget de bascule epuise.".to_string(),
             ));
             break;
         }
@@ -1020,8 +1034,48 @@ async fn chat(
 
         loop {
             let client = if flux { &app.http_flux } else { &app.http };
-            match poster(&app, client, &cible.fournisseur, &cle, &corps_up, None).await {
-                Ok(reponse) => {
+            // Chaque tentative est plafonnee : min(budget de bascule restant, 300 s).
+            let restant_bascule = BUDGET_BASCULES.saturating_sub(debut_requete.elapsed());
+            if restant_bascule.is_zero() {
+                app.journaliser(&format!(
+                    "alias={} : budget de {} s epuise avant {}/{}",
+                    alias.nom,
+                    BUDGET_BASCULES.as_secs(),
+                    cible.fournisseur,
+                    cible.modele
+                ));
+                derniere = Some((
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "Budget de bascule epuise.".to_string(),
+                ));
+                break;
+            }
+            let delai_tentative = restant_bascule.min(DELAI_CIBLE);
+            match tokio::time::timeout(
+                delai_tentative,
+                poster(&app, client, &cible.fournisseur, &cle, &corps_up, None),
+            )
+            .await
+            {
+                Err(_) => {
+                    app.journaliser(&format!(
+                        "alias={} cible={}/{} : delai de {} s depasse",
+                        alias.nom,
+                        cible.fournisseur,
+                        cible.modele,
+                        delai_tentative.as_secs()
+                    ));
+                    app.pool.enregistrer_echec(cible, Some(504), "delai depasse");
+                    derniere = Some((
+                        StatusCode::GATEWAY_TIMEOUT,
+                        format!(
+                            "Delai depasse vers {}/{}.",
+                            cible.fournisseur, cible.modele
+                        ),
+                    ));
+                    break;
+                }
+                Ok(Ok(reponse)) => {
                     let statut = reponse.status();
 
                     if statut.is_success() {
@@ -1039,9 +1093,13 @@ async fn chat(
                             return reponse_flux(reponse, &alias, &etiquette, journal);
                         }
 
-                        let octets = match reponse.bytes().await {
-                            Ok(b) => b,
-                            Err(e) => {
+                        let restant_requete =
+                            BUDGET_REQUETE.saturating_sub(debut_requete.elapsed());
+                        let lecture =
+                            tokio::time::timeout(restant_requete, reponse.bytes()).await;
+                        let octets = match lecture {
+                            Ok(Ok(b)) => b,
+                            Ok(Err(e)) => {
                                 app.pool.enregistrer_echec(
                                     cible,
                                     Some(502),
@@ -1050,6 +1108,25 @@ async fn chat(
                                 derniere = Some((
                                     StatusCode::BAD_GATEWAY,
                                     format!("Lecture de la reponse impossible : {}", e),
+                                ));
+                                break;
+                            }
+                            Err(_) => {
+                                app.journaliser(&format!(
+                                    "alias={} cible={}/{} : duree totale de {} s depassee",
+                                    alias.nom,
+                                    cible.fournisseur,
+                                    cible.modele,
+                                    BUDGET_REQUETE.as_secs()
+                                ));
+                                app.pool.enregistrer_echec(
+                                    cible,
+                                    Some(504),
+                                    "duree totale de la requete depassee",
+                                );
+                                derniere = Some((
+                                    StatusCode::GATEWAY_TIMEOUT,
+                                    "Duree totale de la requete depassee.".to_string(),
                                 ));
                                 break;
                             }
@@ -1097,7 +1174,7 @@ async fn chat(
 
                     return reponse_amont(statut, texte);
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     app.journaliser(&format!(
                         "alias={} cible={}/{} connexion impossible : {}",
                         alias.nom, cible.fournisseur, cible.modele, e
