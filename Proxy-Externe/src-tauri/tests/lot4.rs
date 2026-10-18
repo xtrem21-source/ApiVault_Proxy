@@ -110,7 +110,8 @@ fn le_fichier_ecrit_ne_contient_pas_la_cle_en_clair() {
 }
 
 #[test]
-fn en_tete_corrompu_donne_une_erreur_claire() {    let banc = Banc::nouveau("corrompu");
+fn en_tete_corrompu_donne_une_erreur_claire() {
+    let banc = Banc::nouveau("corrompu");
     let fichier = banc.chemin("cles.env");
 
     // En-tete present, charge qui n'est pas du base64.
@@ -238,7 +239,8 @@ fn la_rotation_d_une_cle_supprime_la_sauvegarde() {
 }
 
 #[test]
-fn migration_d_un_fichier_en_clair_au_premier_enregistrement() {    let banc = Banc::nouveau("migration-ecriture");
+fn migration_d_un_fichier_en_clair_au_premier_enregistrement() {
+    let banc = Banc::nouveau("migration-ecriture");
     let fichier = banc.chemin("cles.env");
     let historique = "# anciennes cles\r\nPROXY_PORT=3100\r\nDEEPSEEK_KEY=sk-ancienne-99\r\n";
     fs::write(&fichier, historique).expect("ecriture du fichier historique");
