@@ -62,6 +62,8 @@ pub struct AppState {
     journal: Mutex<VecDeque<String>>,
     chemin_journal: Option<PathBuf>,
     chemin_debug: Option<PathBuf>,
+    /// Plafond de requetes amont simultanees (8).
+    pub semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 /// Client des appels non streames (300 s de garde-fou).
@@ -119,6 +121,7 @@ impl AppState {
             journal: Mutex::new(VecDeque::new()),
             chemin_journal: Some(dossier.join("journal.log")),
             chemin_debug: Some(dossier.join("debug-corps.json")),
+            semaphore: Arc::new(tokio::sync::Semaphore::new(8)),
         }
     }
 
@@ -319,6 +322,11 @@ impl AppState {
         // L'ancien comportement (fail-open) laissait la passerelle ouverte a
         // quiconque lorsque PROXY_MASTER_KEY etait vide.
         jeton_valide(&self.cfg.jeton, entetes)
+    }
+
+    /// Ligne de journal rattachee a une requete : porte toujours son id.
+    pub fn journaliser_req(&self, id: &str, message: &str) {
+        self.journaliser(&format!("req={} {}", id, message));
     }
 
     pub fn journaliser(&self, message: &str) {
@@ -606,6 +614,9 @@ pub fn routeur(app: Arc<AppState>) -> Router {
         .route("/admin/requalifier", post(pool_requalifier))
         .route("/admin/rafraichir", post(pool_rafraichir))
         .fallback(route_inconnue)
+        // 16 MiB : un contexte de 200k tokens pese environ 0,8 Mo, la marge
+        // couvre les longs historiques et les pieces jointes textuelles.
+        .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024))
         .with_state(app)
 }
 
@@ -915,11 +926,45 @@ async fn pool_requalifier(
 // Chat completions
 // ---------------------------------------------------------------------------
 
+/// Identifiant de requete : 8 caracteres hexadecimaux.
+fn identifiant_requete() -> String {
+    let brut = uuid::Uuid::new_v4().simple().to_string();
+    brut[..8].to_string()
+}
+
+/// Enveloppe `chat_interne` : attribue un X-Request-Id et le renvoie au client.
 async fn chat(
     AxumState(app): AxumState<Arc<AppState>>,
     entetes: HeaderMap,
     corps: Bytes,
 ) -> Response {
+    let id = identifiant_requete();
+    let mut reponse = chat_interne(app, entetes, corps, &id).await;
+    if let Ok(valeur) = HeaderValue::from_str(&id) {
+        reponse.headers_mut().insert("x-request-id", valeur);
+    }
+    reponse
+}
+
+async fn chat_interne(
+    app: Arc<AppState>,
+    entetes: HeaderMap,
+    corps: Bytes,
+    id: &str,
+) -> Response {
+    // Au plus 8 requetes amont simultanees. Le permis est conserve jusqu'a la
+    // fin du flux (il est deplace dans le corps de reponse).
+    let permis = match app.semaphore.clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => {
+            return erreur_json(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Trop de requetes amont simultanees (8 maximum).",
+                "gateway_busy",
+            )
+        }
+    };
+
     if !app.autorise(&entetes) {
         return erreur_jeton();
     }
@@ -978,7 +1023,7 @@ async fn chat(
 
     if ordre.is_empty() {
         let resume = app.pool.resume(&alias);
-        app.journaliser(&format!(
+        app.journaliser_req(id, &format!(
             "alias={} : aucune cible disponible ({})",
             alias.nom, resume
         ));
@@ -1000,7 +1045,7 @@ async fn chat(
     for (_rang, cible) in ordre.iter().take(CIBLES_MAX).enumerate() {
         let restant_bascule = BUDGET_BASCULES.saturating_sub(debut_requete.elapsed());
         if restant_bascule.is_zero() {
-            app.journaliser(&format!(
+            app.journaliser_req(id, &format!(
                 "alias={} : budget de {} s epuise, arret des bascules",
                 alias.nom,
                 BUDGET_BASCULES.as_secs()
@@ -1013,7 +1058,7 @@ async fn chat(
         }
         let debut_cible = Instant::now();
         let Some(fournisseur) = app.cfg.fournisseurs.get(&cible.fournisseur) else {
-            app.journaliser(&format!(
+            app.journaliser_req(id, &format!(
                 "fournisseur inconnu : {} (cible ignoree)",
                 cible.fournisseur
             ));
@@ -1023,7 +1068,7 @@ async fn chat(
         let cle = app.cle_fournisseur(&cible.fournisseur);
         if cle.is_empty() {
             let message = format!("Cle {} absente du fichier cles.env", fournisseur.cle_env);
-            app.journaliser(&message);
+            app.journaliser_req(id, &message);
             derniere = Some((StatusCode::INTERNAL_SERVER_ERROR, message));
             continue;
         }
@@ -1037,7 +1082,7 @@ async fn chat(
             // Chaque tentative est plafonnee : min(budget de bascule restant, 300 s).
             let restant_bascule = BUDGET_BASCULES.saturating_sub(debut_requete.elapsed());
             if restant_bascule.is_zero() {
-                app.journaliser(&format!(
+                app.journaliser_req(id, &format!(
                     "alias={} : budget de {} s epuise avant {}/{}",
                     alias.nom,
                     BUDGET_BASCULES.as_secs(),
@@ -1058,7 +1103,7 @@ async fn chat(
             .await
             {
                 Err(_) => {
-                    app.journaliser(&format!(
+                    app.journaliser_req(id, &format!(
                         "alias={} cible={}/{} : delai de {} s depasse",
                         alias.nom,
                         cible.fournisseur,
@@ -1083,14 +1128,17 @@ async fn chat(
                         let latence = debut_cible.elapsed().as_millis() as u64;
                         app.pool.enregistrer_succes(cible, latence);
                         if flux {
-                            app.journaliser(&format!(
+                            app.journaliser_req(id, &format!(
                                 "alias={} -> {} flux (200)",
                                 alias.nom, etiquette
                             ));
                             let journal_app = Arc::clone(&app);
+                            let id_flux = id.to_string();
                             let journal: Option<Arc<dyn Fn(String) + Send + Sync>> =
-                                Some(Arc::new(move |m: String| journal_app.journaliser(&m)));
-                            return reponse_flux(reponse, &alias, &etiquette, journal);
+                                Some(Arc::new(move |m: String| {
+                                    journal_app.journaliser_req(&id_flux, &m)
+                                }));
+                            return reponse_flux(reponse, &alias, &etiquette, journal, permis);
                         }
 
                         let restant_requete =
@@ -1112,7 +1160,7 @@ async fn chat(
                                 break;
                             }
                             Err(_) => {
-                                app.journaliser(&format!(
+                                app.journaliser_req(id, &format!(
                                     "alias={} cible={}/{} : duree totale de {} s depassee",
                                     alias.nom,
                                     cible.fournisseur,
@@ -1131,7 +1179,7 @@ async fn chat(
                                 break;
                             }
                         };
-                        app.journaliser(&format!(
+                        app.journaliser_req(id, &format!(
                             "alias={} -> {} complet ({} octets)",
                             alias.nom,
                             etiquette,
@@ -1142,7 +1190,7 @@ async fn chat(
 
                     let texte = reponse.text().await.unwrap_or_default();
                     let court = tronquer(&texte, 500);
-                    app.journaliser(&format!(
+                    app.journaliser_req(id, &format!(
                         "alias={} cible={}/{} HTTP {}{} : {}",
                         alias.nom,
                         cible.fournisseur,
@@ -1166,7 +1214,7 @@ async fn chat(
                     {
                         enlever_parametres_optionnels(&mut corps_up);
                         nettoye = true;
-                        app.journaliser(
+                        app.journaliser_req(id, 
                             "400 sur un parametre optionnel : nouvel essai sans tools/response_format",
                         );
                         continue;
@@ -1180,7 +1228,7 @@ async fn chat(
                     return reponse_amont(statut, texte);
                 }
                 Ok(Err(e)) => {
-                    app.journaliser(&format!(
+                    app.journaliser_req(id, &format!(
                         "alias={} cible={}/{} connexion impossible : {}",
                         alias.nom, cible.fournisseur, cible.modele, e
                     ));
@@ -1256,14 +1304,15 @@ fn flux_borne(
     etiquette: String,
     bornes: BornesFlux,
     journal: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    gardien: Option<tokio::sync::OwnedSemaphorePermit>,
 ) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> + Send {
     let debut = Instant::now();
     let amont = reponse.bytes_stream();
-    let etat = (amont, debut, false, etiquette, bornes, journal);
+    let etat = (amont, debut, false, etiquette, bornes, journal, gardien);
 
     futures_util::stream::unfold(
         etat,
-        move |(mut amont, debut, termine, etiquette, bornes, journal)| async move {
+        move |(mut amont, debut, termine, etiquette, bornes, journal, gardien)| async move {
             if termine {
                 return None;
             }
@@ -1282,7 +1331,7 @@ fn flux_borne(
                 );
                 return Some((
                     Ok(evenement),
-                    (amont, debut, true, etiquette, bornes, journal),
+                    (amont, debut, true, etiquette, bornes, journal, gardien),
                 ));
             }
 
@@ -1293,9 +1342,10 @@ fn flux_borne(
                 (bornes.inactivite, "inactivite")
             };
             match tokio::time::timeout(delai, amont.next()).await {
-                Ok(Some(Ok(octets))) => {
-                    Some((Ok(octets), (amont, debut, false, etiquette, bornes, journal)))
-                }
+                Ok(Some(Ok(octets))) => Some((
+                    Ok(octets),
+                    (amont, debut, false, etiquette, bornes, journal, gardien),
+                )),
                 Ok(Some(Err(e))) => {
                     if let Some(j) = &journal {
                         j(format!("flux {} : erreur amont ({})", etiquette, e));
@@ -1306,7 +1356,7 @@ fn flux_borne(
                     );
                     Some((
                         Ok(evenement),
-                        (amont, debut, true, etiquette, bornes, journal),
+                        (amont, debut, true, etiquette, bornes, journal, gardien),
                     ))
                 }
                 Ok(None) => None,
@@ -1332,7 +1382,7 @@ fn flux_borne(
                     );
                     Some((
                         Ok(evenement),
-                        (amont, debut, true, etiquette, bornes, journal),
+                        (amont, debut, true, etiquette, bornes, journal, gardien),
                     ))
                 }
             }
@@ -1345,12 +1395,14 @@ fn reponse_flux(
     alias: &Alias,
     etiquette: &str,
     journal: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    gardien: tokio::sync::OwnedSemaphorePermit,
 ) -> Response {
     let flux = flux_borne(
         reponse,
         etiquette.to_string(),
         BornesFlux::default(),
         journal,
+        Some(gardien),
     );
     let mut sortie = Response::new(Body::from_stream(flux));
     let entetes = sortie.headers_mut();
@@ -1636,6 +1688,16 @@ mod tests {
         assert!(!jeton_valide("sk-apivault-test", &entetes_avec("")));
     }
 
+    #[test]
+    fn identifiant_de_requete_unique_et_hexadecimal() {
+        let a = identifiant_requete();
+        let b = identifiant_requete();
+        assert_eq!(a.len(), 8);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()), "recu : {a}");
+        assert!(b.chars().all(|c| c.is_ascii_hexdigit()), "recu : {b}");
+        assert_ne!(a, b, "deux requetes doivent porter deux ids differents");
+    }
+
     #[tokio::test]
     async fn redirection_amont_non_suivie() {
         use axum::routing::get;
@@ -1707,7 +1769,7 @@ mod tests {
             inactivite: Duration::from_millis(80),
             duree_max: Duration::from_secs(5),
         };
-        let mut flux = Box::pin(flux_borne(reponse, "test".into(), bornes, None));
+        let mut flux = Box::pin(flux_borne(reponse, "test".into(), bornes, None, None));
 
         // Le premier morceau passe tel quel.
         let premier = flux.next().await.unwrap().unwrap();
@@ -1735,7 +1797,7 @@ mod tests {
             duree_max: Duration::from_millis(80),
         };
         let debut = Instant::now();
-        let mut flux = Box::pin(flux_borne(reponse, "test".into(), bornes, None));
+        let mut flux = Box::pin(flux_borne(reponse, "test".into(), bornes, None, None));
         let evenement = flux.next().await.unwrap().unwrap();
         let texte = String::from_utf8_lossy(&evenement).to_string();
         assert!(texte.contains("upstream_timeout"), "recu : {texte}");
@@ -1764,6 +1826,7 @@ mod tests {
             reponse,
             "test".into(),
             BornesFlux::default(),
+            None,
             None,
         ));
         let mut total = Vec::new();
