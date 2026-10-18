@@ -1,9 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod config;
-mod pool;
-mod serveur;
-
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -16,7 +12,9 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
-use crate::serveur::{AppState, Service};
+use apivault_proxy::config;
+use apivault_proxy::serveur::{AppState, Service};
+
 
 const TACHE_DEMARRAGE: &str = "ApiVault_Proxy_Externe";
 

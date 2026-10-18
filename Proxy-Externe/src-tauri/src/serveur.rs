@@ -1220,7 +1220,12 @@ async fn chat_interne(
                         continue;
                     }
 
-                    if reessayable(statut) {
+                    // 401/403 : le fournisseur est condamne (toutes ses cibles)
+                    // mais on bascule vers la cible suivante avant d'abandonner.
+                    if reessayable(statut)
+                        || statut == StatusCode::UNAUTHORIZED
+                        || statut == StatusCode::FORBIDDEN
+                    {
                         derniere = Some((statut, court));
                         break;
                     }
@@ -1255,6 +1260,7 @@ async fn chat_interne(
     let statut_final = match statut {
         StatusCode::TOO_MANY_REQUESTS => StatusCode::TOO_MANY_REQUESTS,
         StatusCode::PAYMENT_REQUIRED => StatusCode::PAYMENT_REQUIRED,
+        StatusCode::GATEWAY_TIMEOUT => StatusCode::GATEWAY_TIMEOUT,
         _ => StatusCode::BAD_GATEWAY,
     };
 
