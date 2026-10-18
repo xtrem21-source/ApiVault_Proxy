@@ -9,3 +9,6 @@ journal*.log
 
 # Dossier de travail V2 (documentation seulement, jamais versionne)
 ApiVault_Proxy-V2/
+
+# Dossiers d'audit et de sauvegarde (jamais versionnes)
+_AUDIT/
