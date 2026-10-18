@@ -287,21 +287,10 @@ impl AppState {
     }
 
     pub fn autorise(&self, entetes: &HeaderMap) -> bool {
-        if self.cfg.jeton.is_empty() {
-            return true;
-        }
-        let brut = entetes
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .or_else(|| entetes.get("x-api-key").and_then(|v| v.to_str().ok()));
-        let Some(brut) = brut else { return false };
-        let brut = brut.trim();
-        let jeton = brut
-            .strip_prefix("Bearer ")
-            .or_else(|| brut.strip_prefix("bearer "))
-            .unwrap_or(brut)
-            .trim();
-        egalite_constante(jeton, &self.cfg.jeton)
+        // Fail-closed : sans jeton configure, aucune requete n'est acceptee.
+        // L'ancien comportement (fail-open) laissait la passerelle ouverte a
+        // quiconque lorsque PROXY_MASTER_KEY etait vide.
+        jeton_valide(&self.cfg.jeton, entetes)
     }
 
     pub fn journaliser(&self, message: &str) {
@@ -434,7 +423,7 @@ pub struct Service {
 
 impl Service {
     pub fn nouveau(port: u16, jeton: String, app: Arc<AppState>) -> Arc<Service> {
-        Arc::new(Service {
+        let service = Arc::new(Service {
             port,
             jeton,
             app,
@@ -443,7 +432,13 @@ impl Service {
             stop: Mutex::new(None),
             erreur: Mutex::new(None),
             depuis: Mutex::new(None),
-        })
+        });
+        if service.jeton.trim().is_empty() {
+            service.app.journaliser(
+                "jeton absent : toutes les requetes seront refusees (401). Renseignez PROXY_MASTER_KEY.",
+            );
+        }
+        service
     }
 
     pub fn demarrer(self: &Arc<Self>) {
@@ -1205,6 +1200,26 @@ fn entete(valeur: &str) -> HeaderValue {
     HeaderValue::from_str(valeur).unwrap_or_else(|_| HeaderValue::from_static("-"))
 }
 
+/// Valide l'en-tete d'authentification contre le jeton attendu.
+/// Fail-closed : un jeton attendu vide ne valide jamais rien.
+fn jeton_valide(attendu: &str, entetes: &HeaderMap) -> bool {
+    if attendu.trim().is_empty() {
+        return false;
+    }
+    let brut = entetes
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| entetes.get("x-api-key").and_then(|v| v.to_str().ok()));
+    let Some(brut) = brut else { return false };
+    let brut = brut.trim();
+    let jeton = brut
+        .strip_prefix("Bearer ")
+        .or_else(|| brut.strip_prefix("bearer "))
+        .unwrap_or(brut)
+        .trim();
+    egalite_constante(jeton, attendu)
+}
+
 fn egalite_constante(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     if a.len() != b.len() {
@@ -1340,5 +1355,48 @@ fn enlever_parametres_optionnels(corps: &mut Value) {
         ] {
             objet.remove(cle);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entetes_avec(valeur: &str) -> HeaderMap {
+        let mut entetes = HeaderMap::new();
+        entetes.insert(header::AUTHORIZATION, HeaderValue::from_str(valeur).unwrap());
+        entetes
+    }
+
+    #[test]
+    fn jeton_absent_dans_la_config_refuse_tout() {
+        // Fail-closed : c'est le coeur du correctif de securite.
+        assert!(!jeton_valide("", &HeaderMap::new()));
+        assert!(!jeton_valide("   ", &entetes_avec("Bearer sk-apivault-test")));
+    }
+
+    #[test]
+    fn requete_sans_entete_est_refusee() {
+        assert!(!jeton_valide("sk-apivault-test", &HeaderMap::new()));
+    }
+
+    #[test]
+    fn bon_jeton_est_accepte() {
+        assert!(jeton_valide(
+            "sk-apivault-test",
+            &entetes_avec("Bearer sk-apivault-test")
+        ));
+        let mut x_api_key = HeaderMap::new();
+        x_api_key.insert("x-api-key", HeaderValue::from_static("sk-apivault-test"));
+        assert!(jeton_valide("sk-apivault-test", &x_api_key));
+    }
+
+    #[test]
+    fn mauvais_jeton_est_refuse() {
+        assert!(!jeton_valide(
+            "sk-apivault-test",
+            &entetes_avec("Bearer sk-apivault-autre")
+        ));
+        assert!(!jeton_valide("sk-apivault-test", &entetes_avec("")));
     }
 }
