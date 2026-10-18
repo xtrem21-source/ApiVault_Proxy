@@ -72,6 +72,31 @@ fn diagnostic(service: tauri::State<'_, Arc<Service>>) -> Value {
     service.diagnostic_json()
 }
 
+/// LOT 5 : totaux de consommation d'une periode `AAAA-MM`.
+///
+/// Une periode vide ou inconnue rend le mois courant ; une periode mal formee
+/// est refusee avec un message explicite.
+#[tauri::command]
+fn metriques(service: tauri::State<'_, Arc<Service>>, periode: Option<String>) -> Result<Value, String> {
+    let periode = match periode {
+        Some(p) if !p.trim().is_empty() => p.trim().to_string(),
+        _ => apivault_proxy::metriques::periode_courante(),
+    };
+    if !apivault_proxy::metriques::periode_valide(&periode) {
+        return Err(format!(
+            "Periode invalide : attendu AAAA-MM, recu « {} ».",
+            periode
+        ));
+    }
+    let totaux = service
+        .inner()
+        .app
+        .metriques
+        .totaliser(&periode)
+        .map_err(|e| format!("Journal de metriques illisible : {}", e))?;
+    serde_json::to_value(&totaux).map_err(|e| format!("Totaux non serialisables : {}", e))
+}
+
 /// Ajout d'un fournisseur depuis l'interface (P8).
 #[tauri::command]
 fn ajouter_fournisseur(
@@ -476,6 +501,7 @@ fn main() {
             definir_modele_prefere,
             interface_prete,
             diagnostic,
+            metriques,
             ajouter_fournisseur,
             tester_cle,
             quitter

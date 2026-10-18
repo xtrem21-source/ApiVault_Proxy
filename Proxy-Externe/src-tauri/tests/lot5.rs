@@ -251,3 +251,366 @@ fn la_periode_courante_a_la_forme_attendue() {
         periode
     );
 }
+
+// ---------------------------------------------------------------------------
+// Capture de l'usage sur une vraie requete relayee
+// ---------------------------------------------------------------------------
+
+use std::io::{Read as _, Write as _};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use apivault_proxy::config::Config;
+use apivault_proxy::serveur::{AppState, Service};
+use serde_json::Value;
+use tokio::sync::Mutex;
+
+static VERROU: Mutex<()> = Mutex::const_new(());
+const JETON: &str = "sk-apivault-lot5";
+
+fn port_libre() -> u16 {
+    let ecoute = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = ecoute.local_addr().unwrap().port();
+    drop(ecoute);
+    port
+}
+
+/// Amont factice : repond `attentes` fois avec le corps et le type donnes.
+fn amont_factice(
+    corps: &'static str,
+    type_contenu: &'static str,
+    statut: u16,
+    attentes: usize,
+) -> (u16, std::thread::JoinHandle<()>) {
+    let ecoute = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = ecoute.local_addr().unwrap().port();
+    let handle = std::thread::spawn(move || {
+        for _ in 0..attentes {
+            let Ok((mut flux, _)) = ecoute.accept() else {
+                return;
+            };
+            let mut tampon = [0u8; 8192];
+            let _ = flux.read(&mut tampon);
+            let reponse = format!(
+                "HTTP/1.1 {} X\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                statut,
+                type_contenu,
+                corps.len(),
+                corps
+            );
+            let _ = flux.write_all(reponse.as_bytes());
+            let _ = flux.flush();
+            let _ = flux.shutdown(std::net::Shutdown::Both);
+        }
+    });
+    (port, handle)
+}
+
+struct BancService {
+    service: Arc<Service>,
+    port: u16,
+    dossier: PathBuf,
+    appdata_original: Option<String>,
+}
+
+impl BancService {
+    fn url(&self, chemin: &str) -> String {
+        format!("http://127.0.0.1:{}{}", self.port, chemin)
+    }
+}
+
+impl Drop for BancService {
+    fn drop(&mut self) {
+        self.service.arreter();
+        let _ = fs::remove_dir_all(&self.dossier);
+        std::env::remove_var("APIVAULT_CLE_ENV");
+        match &self.appdata_original {
+            Some(valeur) => std::env::set_var("APPDATA", valeur),
+            None => std::env::remove_var("APPDATA"),
+        }
+    }
+}
+
+/// Prepare un `cles.env` temporaire dont les fournisseurs pointent sur l'amont
+/// factice, et rend le service sans le demarrer.
+fn preparer(nom: &str, port: u16, url_amont: u16) -> BancService {
+    let dossier = std::env::temp_dir().join(format!(
+        "apivault-lot5-{}-{}",
+        nom,
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dossier);
+    fs::create_dir_all(&dossier).unwrap();
+    let chemin = dossier.join("cles.env");
+    let amont = format!("http://127.0.0.1:{}", url_amont);
+    fs::write(
+        &chemin,
+        format!(
+            "PROXY_PORT={}\nPROXY_MASTER_KEY={}\nDEEPSEEK_KEY=test\nDEEPSEEK_URLS={}\nOPENROUTER_KEY=test\nOPENROUTER_URLS={}\n",
+            port, JETON, amont, amont
+        ),
+    )
+    .unwrap();
+    std::env::set_var("APIVAULT_CLE_ENV", &chemin);
+    let appdata_original = std::env::var("APPDATA").ok();
+    std::env::set_var("APPDATA", &dossier);
+    let cfg = Config::charger();
+    assert_eq!(cfg.port, port);
+    let app = Arc::new(AppState::nouveau(cfg));
+    let service = Service::nouveau(port, JETON.to_string(), app);
+    BancService {
+        service,
+        port,
+        dossier,
+        appdata_original,
+    }
+}
+
+fn client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .unwrap()
+}
+
+async fn attendre_sante(client: &reqwest::Client, port: u16) {
+    let debut = Instant::now();
+    loop {
+        if let Ok(r) = client
+            .get(format!("http://127.0.0.1:{}/health", port))
+            .send()
+            .await
+        {
+            if r.status().is_success() {
+                return;
+            }
+        }
+        if debut.elapsed() > Duration::from_secs(15) {
+            panic!("la passerelle n'a pas demarre sur le port {port}");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Le journal ecrit par le service, ou qu'il soit dans le dossier de donnees.
+fn trouver_journal(dossier: &std::path::Path) -> Option<PathBuf> {
+    let mut pile = vec![dossier.to_path_buf()];
+    let mut trouve = None;
+    while let Some(d) = pile.pop() {
+        if let Ok(entrees) = fs::read_dir(&d) {
+            for e in entrees.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    pile.push(p);
+                } else if p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().starts_with("metriques-"))
+                    .unwrap_or(false)
+                {
+                    trouve = Some(p);
+                }
+            }
+        }
+    }
+    trouve
+}
+
+fn journal_ecrit(dossier: &std::path::Path) -> (PathBuf, Vec<Value>) {
+    let chemin = trouver_journal(dossier).expect("un fichier metriques-AAAAMM.jsonl doit exister");
+    let contenu = fs::read_to_string(&chemin).unwrap();
+    let lignes = contenu
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str::<Value>(l).expect("chaque ligne est du JSON"))
+        .collect();
+    (chemin, lignes)
+}
+
+#[tokio::test]
+async fn capture_non_flux_ecrit_les_tokens() {
+    let _garde = VERROU.lock().await;
+    let reponse_amont = r#"{"id":"x","choices":[{"message":{"role":"assistant","content":"bonjour"}}],"usage":{"prompt_tokens":128,"completion_tokens":64,"prompt_cache_hit_tokens":32}}"#;
+    let (port_amont, _serveur) = amont_factice(reponse_amont, "application/json", 200, 1);
+    let port = port_libre();
+    let banc = preparer("non-flux", port, port_amont);
+    banc.service.demarrer();
+    let client = client();
+    attendre_sante(&client, port).await;
+
+    let reponse = client
+        .post(banc.url("/v1/chat/completions"))
+        .header("authorization", format!("Bearer {}", JETON))
+        .json(&serde_json::json!({
+            "model": "defaut",
+            "messages": [{ "role": "user", "content": "bonjour" }]
+        }))
+        .send()
+        .await
+        .expect("requete relayee");
+    assert_eq!(reponse.status(), 200);
+    let corps: Value = reponse.json().await.unwrap();
+    assert_eq!(corps["choices"][0]["message"]["content"], "bonjour");
+
+    let (chemin, lignes) = journal_ecrit(&banc.dossier);
+    assert_eq!(lignes.len(), 1, "une requete = une ligne : {:?}", chemin);
+    let ligne = &lignes[0];
+    assert_eq!(ligne["alias"], "defaut");
+    assert_eq!(ligne["fournisseur"], "deepseek");
+    assert_eq!(ligne["modele"], "deepseek-chat");
+    assert_eq!(ligne["statut"], 200);
+    assert_eq!(ligne["tokens_in"], 128);
+    assert_eq!(ligne["tokens_out"], 64);
+    assert_eq!(ligne["tokens_cache"], 32);
+    assert_eq!(ligne["estime"], false);
+    assert_eq!(ligne["flux"], false);
+    assert_eq!(ligne["tentative"], 1);
+    assert!(!ligne["id"].as_str().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn capture_flux_ecrit_les_tokens_a_la_fin() {
+    let _garde = VERROU.lock().await;
+    let flux = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"bon\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"jour\"}}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,",
+        "\"prompt_cache_hit_tokens\":60}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (port_amont, _serveur) = amont_factice(flux, "text/event-stream", 200, 1);
+    let port = port_libre();
+    let banc = preparer("flux", port, port_amont);
+    banc.service.demarrer();
+    let client = client();
+    attendre_sante(&client, port).await;
+
+    let reponse = client
+        .post(banc.url("/v1/chat/completions"))
+        .header("authorization", format!("Bearer {}", JETON))
+        .json(&serde_json::json!({
+            "model": "defaut",
+            "stream": true,
+            "messages": [{ "role": "user", "content": "bonjour" }]
+        }))
+        .send()
+        .await
+        .expect("requete relayee");
+    assert_eq!(reponse.status(), 200);
+    let texte = reponse.text().await.expect("flux lu jusqu'au bout");
+    assert!(texte.contains("bon"), "le flux doit traverser : {}", texte);
+
+    // La ligne n'est ecrite qu'a la fermeture du flux : on laisse au gardien
+    // le temps de conclure.
+    let mut lignes = Vec::new();
+    for _ in 0..100 {
+        if trouver_journal(&banc.dossier).is_some() {
+            let (_, l) = journal_ecrit(&banc.dossier);
+            if !l.is_empty() {
+                lignes = l;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(lignes.len(), 1, "une seule ligne pour un flux");
+    let ligne = &lignes[0];
+    assert_eq!(ligne["flux"], true);
+    assert_eq!(ligne["tokens_in"], 100);
+    assert_eq!(ligne["tokens_out"], 20);
+    assert_eq!(ligne["tokens_cache"], 60);
+    assert_eq!(ligne["estime"], false);
+    assert_eq!(ligne["statut"], 200);
+}
+
+#[tokio::test]
+async fn admin_metriques_rend_les_totaux_et_refuse_sans_jeton() {
+    let _garde = VERROU.lock().await;
+    let reponse_amont = r#"{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"prompt_cache_hit_tokens":2}}"#;
+    let (port_amont, _serveur) = amont_factice(reponse_amont, "application/json", 200, 1);
+    let port = port_libre();
+    let banc = preparer("admin", port, port_amont);
+    banc.service.demarrer();
+    let client = client();
+    attendre_sante(&client, port).await;
+
+    let _ = client
+        .post(banc.url("/v1/chat/completions"))
+        .header("authorization", format!("Bearer {}", JETON))
+        .json(&serde_json::json!({
+            "model": "defaut",
+            "messages": [{ "role": "user", "content": "salut" }]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // Sans jeton : refus.
+    let sans = client.get(banc.url("/admin/metriques")).send().await.unwrap();
+    assert_eq!(sans.status(), 401, "l'endpoint doit exiger le jeton");
+
+    // Avec jeton : les totaux de la periode.
+    let periode = metriques::periode_courante();
+    let avec = client
+        .get(banc.url(&format!("/admin/metriques?periode={}", periode)))
+        .header("authorization", format!("Bearer {}", JETON))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(avec.status(), 200);
+    let totaux: Value = avec.json().await.unwrap();
+    assert_eq!(totaux["periode"], periode);
+    assert_eq!(totaux["requetes"], 1);
+    assert_eq!(totaux["entrees"], 10);
+    assert_eq!(totaux["sorties"], 5);
+    assert_eq!(totaux["cache"], 2);
+    assert_eq!(totaux["estimees"], 0);
+    assert_eq!(totaux["par_alias"][0]["nom"], "defaut");
+
+    // Periode mal formee : 400 explicite, pas une panique.
+    let invalide = client
+        .get(banc.url("/admin/metriques?periode=2026-13"))
+        .header("authorization", format!("Bearer {}", JETON))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(invalide.status(), 400);
+    let corps: Value = invalide.json().await.unwrap();
+    assert_eq!(corps["error"]["code"], "periode_invalide");
+}
+
+#[tokio::test]
+async fn echec_amont_compte_et_marque_estime() {
+    let _garde = VERROU.lock().await;
+    let (port_amont, _serveur) = amont_factice(
+        r#"{"error":{"message":"boum"}}"#,
+        "application/json",
+        500,
+        2,
+    );
+    let port = port_libre();
+    let banc = preparer("echec", port, port_amont);
+    banc.service.demarrer();
+    let client = client();
+    attendre_sante(&client, port).await;
+
+    let reponse = client
+        .post(banc.url("/v1/chat/completions"))
+        .header("authorization", format!("Bearer {}", JETON))
+        .json(&serde_json::json!({
+            "model": "defaut",
+            "messages": [{ "role": "user", "content": "bonjour" }]
+        }))
+        .send()
+        .await
+        .expect("le proxy doit rendre une reponse d'erreur");
+    assert!(!reponse.status().is_success(), "l'amont a echoue");
+
+    let (_, lignes) = journal_ecrit(&banc.dossier);
+    assert_eq!(lignes.len(), 1, "un echec compte aussi comme une requete");
+    let ligne = &lignes[0];
+    assert_eq!(ligne["estime"], true, "sans usage, la ligne est estimee");
+    assert_eq!(ligne["tokens_in"], 0);
+    assert_eq!(ligne["tokens_out"], 0);
+    assert!(ligne["statut"].as_u64().unwrap() >= 400);
+    assert_eq!(ligne["alias"], "defaut");
+}

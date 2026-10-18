@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::body::{Body, Bytes};
-use axum::extract::{Path as AxumPath, State as AxumState};
+use axum::extract::{Path as AxumPath, Query, State as AxumState};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
@@ -24,6 +24,7 @@ use tokio::sync::watch;
 #[cfg(test)]
 use crate::pool::Pool;
 use crate::coffre;
+use crate::metriques::Enregistrement;
 use crate::config::{
     construire_alias, decouper_adresses, dossier_donnees, ecrire_variable,
     ecrire_variable_sans_sauvegarde, modele_gratuit, sauver_modele_prefere, Alias, Cible, Config,
@@ -75,6 +76,8 @@ pub struct AppState {
     journal: Mutex<VecDeque<String>>,
     chemin_journal: Option<PathBuf>,
     chemin_debug: Option<PathBuf>,
+    /// LOT 5 : journal des tokens consommes, un fichier JSONL par mois.
+    pub metriques: Arc<crate::metriques::Metriques>,
     /// Plafond de requetes amont simultanees (8).
     pub semaphore: Arc<tokio::sync::Semaphore>,
     /// Fournisseurs ajoutes depuis l'interface (persistes dans cles.env).
@@ -140,6 +143,7 @@ impl AppState {
             journal: Mutex::new(VecDeque::new()),
             chemin_journal: Some(dossier.join("journal.log")),
             chemin_debug: Some(dossier.join("debug-corps.json")),
+            metriques: Arc::new(crate::metriques::Metriques::nouveau(dossier.clone())),
             semaphore: Arc::new(tokio::sync::Semaphore::new(8)),
             perso: Mutex::new(cfg_perso.clone()),
             verifie_session: AtomicBool::new(false),
@@ -871,6 +875,9 @@ impl AppState {
             journal: Mutex::new(VecDeque::new()),
             chemin_journal: None,
             chemin_debug: None,
+            metriques: Arc::new(crate::metriques::Metriques::nouveau(
+                std::env::temp_dir().join("apivault-metriques-test"),
+            )),
             semaphore: Arc::new(tokio::sync::Semaphore::new(8)),
             perso: Mutex::new(cfg_perso),
             verifie_session: AtomicBool::new(false),
@@ -1109,6 +1116,7 @@ pub fn routeur(app: Arc<AppState>) -> Router {
         .route("/v1/chat/completions", post(chat))
         .route("/chat/completions", post(chat))
         .route("/admin/pool", get(pool_vue))
+        .route("/admin/metriques", get(admin_metriques))
         .route("/admin/requalifier", post(pool_requalifier))
         .route("/admin/rafraichir", post(pool_rafraichir))
         .fallback(route_inconnue)
@@ -1497,6 +1505,53 @@ async fn pool_rafraichir(AxumState(app): AxumState<Arc<AppState>>, entetes: Head
 }
 
 // ---------------------------------------------------------------------------
+// LOT 5 : consommation de tokens
+// ---------------------------------------------------------------------------
+
+/// `GET /admin/metriques?periode=AAAA-MM` (mois courant par defaut).
+///
+/// Rend les totaux d'entree, de sortie et de cache de la periode. Aucun nom
+/// de cle, aucun contenu de message ne sort d'ici : le journal ne les contient
+/// pas non plus.
+async fn admin_metriques(
+    AxumState(app): AxumState<Arc<AppState>>,
+    entetes: HeaderMap,
+    Query(parametres): Query<HashMap<String, String>>,
+) -> Response {
+    if !app.autorise(&entetes) {
+        return erreur_jeton();
+    }
+
+    let periode = parametres
+        .get("periode")
+        .cloned()
+        .unwrap_or_else(crate::metriques::periode_courante);
+    if !crate::metriques::periode_valide(&periode) {
+        return erreur_json(
+            StatusCode::BAD_REQUEST,
+            "Periode invalide : attendu AAAA-MM, par exemple 2026-10.",
+            "periode_invalide",
+        );
+    }
+
+    match app.metriques.totaliser(&periode) {
+        Ok(totaux) => match serde_json::to_value(&totaux) {
+            Ok(valeur) => json_reponse(StatusCode::OK, valeur),
+            Err(e) => erreur_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Totaux non serialisables : {}", e),
+                "metriques_invalides",
+            ),
+        },
+        Err(e) => erreur_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("Journal de metriques illisible : {}", e),
+            "metriques_illisibles",
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Administration du pool (rafraichissement manuel)
 // ---------------------------------------------------------------------------
 
@@ -1572,14 +1627,57 @@ fn identifiant_requete() -> String {
     brut[..8].to_string()
 }
 
-/// Enveloppe `chat_interne` : attribue un X-Request-Id et le renvoie au client.
+/// Ce qu'une requete a consomme, rempli au fil du relais.
+///
+/// Le flux SSE remplit la meme structure, mais ecrit lui-meme sa ligne quand
+/// il se termine (`rapporte`) : a cet instant `chat` a deja rendu la reponse.
+#[derive(Debug, Clone, Default)]
+pub struct Mesure {
+    pub alias: String,
+    pub fournisseur: String,
+    pub modele: String,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub tokens_cache: u64,
+    /// Vrai dès qu'un `usage` exploitable a ete lu.
+    pub usage_vu: bool,
+    pub tentative: u32,
+    pub flux: bool,
+    pub rapporte: bool,
+}
+
+/// Enveloppe `chat_interne` : attribue un X-Request-Id, le renvoie au client
+/// et ecrit la ligne de metriques de la requete.
 async fn chat(
     AxumState(app): AxumState<Arc<AppState>>,
     entetes: HeaderMap,
     corps: Bytes,
 ) -> Response {
     let id = identifiant_requete();
-    let mut reponse = chat_interne(app, entetes, corps, &id).await;
+    let debut = Instant::now();
+    let mesure = Arc::new(std::sync::Mutex::new(Mesure::default()));
+    let mut reponse = chat_interne(app.clone(), entetes, corps, &id, mesure.clone()).await;
+    let statut = reponse.status().as_u16();
+
+    let m = mesure.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if !m.rapporte {
+        let mut e = Enregistrement::nouveau(&id, &m.alias);
+        e.fournisseur = m.fournisseur.clone();
+        e.modele = m.modele.clone();
+        e.statut = statut;
+        e.latence_ms = debut.elapsed().as_millis() as u64;
+        e.tokens_in = m.tokens_in;
+        e.tokens_out = m.tokens_out;
+        e.tokens_cache = m.tokens_cache;
+        e.estime = !m.usage_vu;
+        e.tentative = m.tentative;
+        e.flux = false;
+        if let Err(err) = app.metriques.enregistrer(&e) {
+            // Une mesure perdue ne doit jamais faire echouer la requete.
+            app.journaliser_req(&id, &format!("metriques : ecriture impossible ({})", err));
+        }
+    }
+
     if let Ok(valeur) = HeaderValue::from_str(&id) {
         reponse.headers_mut().insert("x-request-id", valeur);
     }
@@ -1591,6 +1689,7 @@ async fn chat_interne(
     entetes: HeaderMap,
     corps: Bytes,
     id: &str,
+    mesure: Arc<std::sync::Mutex<Mesure>>,
 ) -> Response {
     // Au plus 8 requetes amont simultanees. Le permis est conserve jusqu'a la
     // fin du flux (il est deplace dans le corps de reponse).
@@ -1648,6 +1747,11 @@ async fn chat_interne(
         );
     };
 
+    {
+        let mut m = mesure.lock().unwrap_or_else(|e| e.into_inner());
+        m.alias = alias.nom.clone();
+    }
+
     if payload.get("messages").is_none() {
         return erreur_json(
             StatusCode::BAD_REQUEST,
@@ -1682,7 +1786,7 @@ async fn chat_interne(
     }
 
     // Budget : au plus 3 cibles (1 tentative + 2 bascules) et 45 s de bascule.
-    for (_rang, cible) in ordre.iter().take(CIBLES_MAX).enumerate() {
+    for (rang, cible) in ordre.iter().take(CIBLES_MAX).enumerate() {
         let restant_bascule = BUDGET_BASCULES.saturating_sub(debut_requete.elapsed());
         if restant_bascule.is_zero() {
             app.journaliser_req(id, &format!(
@@ -1697,6 +1801,12 @@ async fn chat_interne(
             break;
         }
         let debut_cible = Instant::now();
+        {
+            let mut m = mesure.lock().unwrap_or_else(|e| e.into_inner());
+            m.fournisseur = cible.fournisseur.clone();
+            m.modele = cible.modele.clone();
+            m.tentative = rang as u32 + 1;
+        }
         let Some(fournisseur) = app.cfg.fournisseurs.get(&cible.fournisseur) else {
             app.journaliser_req(id, &format!(
                 "fournisseur inconnu : {} (cible ignoree)",
@@ -1778,7 +1888,28 @@ async fn chat_interne(
                                 Some(Arc::new(move |m: String| {
                                     journal_app.journaliser_req(&id_flux, &m)
                                 }));
-                            return reponse_flux(reponse, &alias, &etiquette, journal, permis);
+                            // LOT 5 : c'est le flux qui ecrira la ligne, a sa
+                            // fermeture, quand l'usage final sera connu.
+                            {
+                                let mut m =
+                                    mesure.lock().unwrap_or_else(|e| e.into_inner());
+                                m.flux = true;
+                                m.rapporte = true;
+                            }
+                            return reponse_flux_avec(
+                                reponse,
+                                &alias,
+                                &etiquette,
+                                journal,
+                                permis,
+                                Some(Arc::new(RapportFlux {
+                                    metriques: Arc::clone(&app.metriques),
+                                    mesure: Arc::clone(&mesure),
+                                    id: id.to_string(),
+                                    alias: alias.nom.clone(),
+                                    debut: debut_requete,
+                                })),
+                            );
                         }
 
                         let restant_requete =
@@ -1825,6 +1956,21 @@ async fn chat_interne(
                             etiquette,
                             octets.len()
                         ));
+                        // LOT 5 : l'usage annonce par le fournisseur alimente
+                        // la mesure. Absent -> la ligne sera marquee estimee.
+                        if let Ok(valeur) =
+                            serde_json::from_slice::<serde_json::Value>(&octets)
+                        {
+                            if let Some((entree, sortie, cache)) =
+                                crate::metriques::usage_depuis_json(&valeur)
+                            {
+                                let mut m = mesure.lock().unwrap_or_else(|e| e.into_inner());
+                                m.tokens_in = entree;
+                                m.tokens_out = sortie;
+                                m.tokens_cache = cache;
+                                m.usage_vu = true;
+                            }
+                        }
                         return reponse_complete(octets, &alias, &etiquette);
                     }
 
@@ -1945,6 +2091,72 @@ fn sse_erreur(type_code: &str, message: &str) -> Bytes {
 /// Enveloppe le flux amont : coupe apres `inactivite` sans octet, et apres
 /// `duree_max` au total. A l'expiration, un evenement SSE d'erreur au format
 /// OpenAI est emis, puis le flux se ferme proprement (pas de tache orpheline).
+/// Taille de la fenetre glissante gardee pour retrouver l'evenement `usage`.
+const TAMPON_FLUX_MAX: usize = 64 * 1024;
+
+/// Rapport de fin de flux : ecrit la ligne de metriques du flux.
+struct RapportFlux {
+    metriques: Arc<crate::metriques::Metriques>,
+    mesure: Arc<std::sync::Mutex<Mesure>>,
+    id: String,
+    alias: String,
+    debut: Instant,
+}
+
+impl RapportFlux {
+    /// Appelee une seule fois, quand le flux se termine. L'usage est lu dans
+    /// la fenetre glissante ; absent, la ligne est marquee estimee.
+    fn conclure(&self, tampon: &[u8]) {
+        let m = self
+            .mesure
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let mut e = Enregistrement::nouveau(&self.id, &self.alias);
+        e.fournisseur = m.fournisseur;
+        e.modele = m.modele;
+        e.statut = 200;
+        e.latence_ms = self.debut.elapsed().as_millis() as u64;
+        e.tentative = m.tentative;
+        e.flux = true;
+        match crate::metriques::usage_dans_flux(&String::from_utf8_lossy(tampon)) {
+            Some((entree, sortie, cache)) => {
+                e.tokens_in = entree;
+                e.tokens_out = sortie;
+                e.tokens_cache = cache;
+                e.estime = false;
+            }
+            None => e.estime = true,
+        }
+        let _ = self.metriques.enregistrer(&e);
+    }
+}
+
+/// Etat interne du flux borne.
+struct EtatFlux {
+    amont:
+        std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
+    debut: Instant,
+    termine: bool,
+    etiquette: String,
+    bornes: BornesFlux,
+    journal: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    /// Garde le creneau du semaphore jusqu'a la fin du flux : jamais lu,
+    /// seulement conserve en vie.
+    _gardien: Option<tokio::sync::OwnedSemaphorePermit>,
+    tampon: Vec<u8>,
+    rapport: Option<Arc<RapportFlux>>,
+}
+
+impl EtatFlux {
+    /// Ecrit la ligne de metriques du flux, une seule fois.
+    fn conclure(&mut self) {
+        if let Some(rapport) = self.rapport.take() {
+            rapport.conclure(&self.tampon);
+        }
+    }
+}
+
 fn flux_borne(
     reponse: reqwest::Response,
     etiquette: String,
@@ -1952,73 +2164,99 @@ fn flux_borne(
     journal: Option<Arc<dyn Fn(String) + Send + Sync>>,
     gardien: Option<tokio::sync::OwnedSemaphorePermit>,
 ) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> + Send {
-    let debut = Instant::now();
-    let amont = reponse.bytes_stream();
-    let etat = (amont, debut, false, etiquette, bornes, journal, gardien);
+    flux_borne_avec(reponse, etiquette, bornes, journal, gardien, None)
+}
 
-    futures_util::stream::unfold(
-        etat,
-        move |(mut amont, debut, termine, etiquette, bornes, journal, gardien)| async move {
-            if termine {
+fn flux_borne_avec(
+    reponse: reqwest::Response,
+    etiquette: String,
+    bornes: BornesFlux,
+    journal: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    gardien: Option<tokio::sync::OwnedSemaphorePermit>,
+    rapport: Option<Arc<RapportFlux>>,
+) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> + Send {
+    let debut = Instant::now();
+    let etat = EtatFlux {
+        amont: Box::pin(reponse.bytes_stream()),
+        debut,
+        termine: false,
+        etiquette,
+        bornes,
+        journal,
+        _gardien: gardien,
+        tampon: Vec::new(),
+        rapport,
+    };
+
+    futures_util::stream::unfold(etat, move |mut etat| async move {
+            if etat.termine {
+                etat.conclure();
                 return None;
             }
-            let ecoule = debut.elapsed();
-            if ecoule >= bornes.duree_max {
-                if let Some(j) = &journal {
+            let ecoule = etat.debut.elapsed();
+            if ecoule >= etat.bornes.duree_max {
+                if let Some(j) = &etat.journal {
                     j(format!(
                         "flux {} : duree totale maximale depassee ({} s), fermeture",
-                        etiquette,
-                        bornes.duree_max.as_secs()
+                        etat.etiquette,
+                        etat.bornes.duree_max.as_secs()
                     ));
                 }
                 let evenement = sse_erreur(
                     "upstream_timeout",
                     "La duree totale maximale du flux est depassee.",
                 );
-                return Some((
-                    Ok(evenement),
-                    (amont, debut, true, etiquette, bornes, journal, gardien),
-                ));
+                etat.termine = true;
+                return Some((Ok(evenement), etat));
             }
 
-            let reste = bornes.duree_max - ecoule;
-            let (delai, cause) = if reste < bornes.inactivite {
+            let reste = etat.bornes.duree_max - ecoule;
+            let (delai, cause) = if reste < etat.bornes.inactivite {
                 (reste, "duree")
             } else {
-                (bornes.inactivite, "inactivite")
+                (etat.bornes.inactivite, "inactivite")
             };
-            match tokio::time::timeout(delai, amont.next()).await {
-                Ok(Some(Ok(octets))) => Some((
-                    Ok(octets),
-                    (amont, debut, false, etiquette, bornes, journal, gardien),
-                )),
+            match tokio::time::timeout(delai, etat.amont.next()).await {
+                Ok(Some(Ok(octets))) => {
+                    // LOT 5 : fenetre glissante pour retrouver l'evenement
+                    // final `usage` du flux, sans garder tout le contenu.
+                    if etat.rapport.is_some() {
+                        etat.tampon.extend_from_slice(&octets);
+                        if etat.tampon.len() > TAMPON_FLUX_MAX {
+                            let surplus = etat.tampon.len() - TAMPON_FLUX_MAX / 2;
+                            etat.tampon.drain(..surplus);
+                        }
+                    }
+                    Some((Ok(octets), etat))
+                }
                 Ok(Some(Err(e))) => {
-                    if let Some(j) = &journal {
-                        j(format!("flux {} : erreur amont ({})", etiquette, e));
+                    if let Some(j) = &etat.journal {
+                        j(format!("flux {} : erreur amont ({})", etat.etiquette, e));
                     }
                     let evenement = sse_erreur(
                         "upstream_broken",
                         "Le flux amont s'est interrompu avant la fin.",
                     );
-                    Some((
-                        Ok(evenement),
-                        (amont, debut, true, etiquette, bornes, journal, gardien),
-                    ))
+                    etat.termine = true;
+                    Some((Ok(evenement), etat))
                 }
-                Ok(None) => None,
+                Ok(None) => {
+                    etat.conclure();
+                    None
+                }
                 Err(_) => {
-                    if let Some(j) = &journal {
+                    if let Some(j) = &etat.journal {
                         if cause == "duree" {
                             j(format!(
                                 "flux {} : duree totale maximale depassee ({} s), fermeture",
-                                etiquette,
-                                bornes.duree_max.as_secs()
+                                etat.etiquette,
+                                etat.bornes.duree_max.as_secs()
                             ));
                         } else {
                             j(format!(
                                 "flux {} : inactivite de {} s depassee, fermeture",
-                                etiquette,
-                                bornes.inactivite.as_secs()
+                                etat.etiquette,
+                                etat.bornes.inactivite.as_secs()
                             ));
                         }
                     }
@@ -2026,14 +2264,11 @@ fn flux_borne(
                         "upstream_timeout",
                         "Aucun octet recu du fournisseur dans le delai imparti.",
                     );
-                    Some((
-                        Ok(evenement),
-                        (amont, debut, true, etiquette, bornes, journal, gardien),
-                    ))
+                    etat.termine = true;
+                    Some((Ok(evenement), etat))
                 }
             }
-        },
-    )
+    })
 }
 
 fn reponse_flux(
@@ -2043,12 +2278,24 @@ fn reponse_flux(
     journal: Option<Arc<dyn Fn(String) + Send + Sync>>,
     gardien: tokio::sync::OwnedSemaphorePermit,
 ) -> Response {
-    let flux = flux_borne(
+    reponse_flux_avec(reponse, alias, etiquette, journal, gardien, None)
+}
+
+fn reponse_flux_avec(
+    reponse: reqwest::Response,
+    alias: &Alias,
+    etiquette: &str,
+    journal: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    gardien: tokio::sync::OwnedSemaphorePermit,
+    rapport: Option<Arc<RapportFlux>>,
+) -> Response {
+    let flux = flux_borne_avec(
         reponse,
         etiquette.to_string(),
         BornesFlux::default(),
         journal,
         Some(gardien),
+        rapport,
     );
     let mut sortie = Response::new(Body::from_stream(flux));
     let entetes = sortie.headers_mut();
