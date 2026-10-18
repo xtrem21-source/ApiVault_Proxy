@@ -1,6 +1,6 @@
 [package]
 name = "apivault-proxy"
-version = "0.4.2"
+version = "0.5.0"
 description = "ApiVault_Proxy - passerelle locale"
 edition = "2021"
 

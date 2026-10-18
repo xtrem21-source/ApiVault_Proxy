@@ -55,6 +55,11 @@ pub struct Etat {
     pub latence_ms: Option<u64>,
     pub erreur: Option<String>,
     pub derniere_utilisation: Option<u64>,
+    /// Vrai quand l'etat vient du disque et n'a pas encore ete reconfirme
+    /// pendant cette session : l'interface ne doit pas le presenter comme
+    /// joignable (« dernier etat connu »).
+    #[serde(default)]
+    pub repris: bool,
 }
 
 impl Default for Etat {
@@ -68,6 +73,7 @@ impl Default for Etat {
             latence_ms: None,
             erreur: None,
             derniere_utilisation: None,
+            repris: false,
         }
     }
 }
@@ -86,12 +92,18 @@ pub struct Pool {
 impl Pool {
     pub fn charger() -> Pool {
         let chemin = Some(dossier_donnees().join("etat-pool.json"));
-        let etats = chemin
+        let mut etats = chemin
             .as_ref()
             .and_then(|c| std::fs::read_to_string(c).ok())
             .and_then(|texte| serde_json::from_str::<Fichier>(&texte).ok())
             .map(|f| f.candidats)
             .unwrap_or_default();
+
+        // Un candidat restaure « sain » n'a pas ete observe pendant cette
+        // session : il est marque `repris` pour ne jamais passer pour joignable.
+        for etat in etats.values_mut() {
+            etat.repris = etat.statut == Statut::Sain;
+        }
 
         Pool {
             etats: Mutex::new(etats),
@@ -101,6 +113,15 @@ impl Pool {
 
     fn cle(cible: &Cible) -> String {
         format!("{}/{}", cible.fournisseur, cible.modele)
+    }
+
+    /// Pool sans disque, pour les tests qui ne veulent rien ecrire.
+    #[cfg(test)]
+    pub fn vide() -> Pool {
+        Pool {
+            etats: Mutex::new(HashMap::new()),
+            chemin: None,
+        }
     }
 
     fn maintenant() -> u64 {
@@ -157,6 +178,7 @@ impl Pool {
         etat.echecs = 0;
         etat.ok += 1;
         etat.erreur = None;
+        etat.repris = false;
         etat.derniere_utilisation = Some(Self::maintenant());
         etat.latence_ms = Some(match etat.latence_ms {
             Some(ancienne) => (ancienne * 3 + latence_ms) / 4,
@@ -178,6 +200,7 @@ impl Pool {
         etat.echecs = etat.echecs.saturating_add(1);
         etat.erreur = Some(tronquer(message, 300));
         etat.derniere_utilisation = Some(maintenant);
+        etat.repris = false;
 
         match statut_http {
             Some(code @ (401 | 403)) => {
@@ -223,6 +246,7 @@ impl Pool {
                 if cle.starts_with(&prefixe) {
                     autre.statut = Statut::EnPanne;
                     autre.jusqu_a = None;
+                    autre.repris = false;
                     autre.erreur = Some(format!(
                         "cle invalide ({}) : fournisseur {}",
                         code, cible.fournisseur
@@ -246,6 +270,7 @@ impl Pool {
                 etat.statut = Statut::Inconnu;
                 etat.jusqu_a = None;
                 etat.echecs = 0;
+                etat.repris = false;
             }
         }
         self.sauver();
@@ -259,6 +284,7 @@ impl Pool {
                     etat.statut = Statut::Inconnu;
                     etat.jusqu_a = None;
                     etat.echecs = 0;
+                    etat.repris = false;
                     true
                 }
                 None => false,
@@ -299,8 +325,40 @@ impl Pool {
         map.values().filter(|e| e.statut == Statut::Sain).count()
     }
 
+    /// Candidats sains confirmes pendant cette session uniquement.
+    pub fn compter_sains_verifies(&self) -> usize {
+        let Ok(map) = self.etats.lock() else { return 0 };
+        map.values()
+            .filter(|e| e.statut == Statut::Sain && !e.repris)
+            .count()
+    }
+
     pub fn a_un_sain(&self) -> bool {
         self.compter_sains() > 0
+    }
+
+    /// Vrai si au moins un candidat a ete observe sain pendant cette session
+    /// (un etat simplement repris du disque ne compte pas).
+    pub fn a_un_sain_verifie(&self) -> bool {
+        let Ok(map) = self.etats.lock() else { return false };
+        map.values().any(|e| e.statut == Statut::Sain && !e.repris)
+    }
+
+    /// Statut courant d'une cible, sans effet de bord.
+    pub fn statut(&self, cible: &Cible) -> Statut {
+        self.etat_courant(cible).statut
+    }
+
+    /// Cibles jamais verifiees (statut inconnu), dedoublonnees.
+    pub fn inconnues(&self, alias: &[Alias]) -> Vec<Cible> {
+        let mut vues = std::collections::HashSet::new();
+        alias
+            .iter()
+            .flat_map(|a| a.cibles.iter())
+            .filter(|c| self.statut(c) == Statut::Inconnu)
+            .filter(|c| vues.insert(Self::cle(c)))
+            .cloned()
+            .collect()
     }
 
     /// Age de la reussite la plus recente, en secondes.
@@ -345,6 +403,7 @@ impl Pool {
                     "latence_ms": etat.latence_ms,
                     "erreur": etat.erreur,
                     "derniere_utilisation_s": etat.derniere_utilisation.map(|t| maintenant.saturating_sub(t) / 1000),
+                    "verifie": !etat.repris,
                 })
             })
             .collect()

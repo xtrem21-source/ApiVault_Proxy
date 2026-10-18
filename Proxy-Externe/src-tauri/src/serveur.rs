@@ -20,11 +20,13 @@ use futures_util::StreamExt;
 use serde_json::{json, Value};
 use tokio::sync::watch;
 
+#[cfg(test)]
+use crate::pool::Pool;
 use crate::config::{
-    construire_alias, decouper_adresses, dossier_donnees, ecrire_variable, modele_gratuit,
-    sauver_modele_prefere, Alias, Cible, Config,
+    construire_alias, decouper_adresses, dossier_donnees, ecrire_variable,
+    ecrire_variable_sans_sauvegarde, modele_gratuit, sauver_modele_prefere, Alias, Cible, Config,
+    Fournisseur, Perso,
 };
-
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Inactivite maximale toleree entre deux octets du flux amont.
@@ -39,6 +41,15 @@ const BUDGET_REQUETE: Duration = Duration::from_secs(900);
 const DELAI_CIBLE: Duration = Duration::from_secs(300);
 /// Au plus 3 cibles essayees : 1 tentative + 2 bascules.
 const CIBLES_MAX: usize = 3;
+
+/// Horloge du processus, posee au premier appel (debut de `main`).
+static DEBUT_PROCESSUS: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+/// Millisecondes ecoulees depuis le debut du processus, pour le journal de
+/// demarrage (config, pool, serveur, interface, total).
+pub fn ms_depuis_demarrage() -> u128 {
+    DEBUT_PROCESSUS.get_or_init(Instant::now).elapsed().as_millis()
+}
 
 pub struct AppState {
     pub cfg: Config,
@@ -64,6 +75,11 @@ pub struct AppState {
     chemin_debug: Option<PathBuf>,
     /// Plafond de requetes amont simultanees (8).
     pub semaphore: Arc<tokio::sync::Semaphore>,
+    /// Fournisseurs ajoutes depuis l'interface (persistes dans cles.env).
+    perso: Mutex<Vec<Perso>>,
+    /// Au moins une verification a eu lieu depuis le demarrage : l'etat affiche
+    /// est alors une mesure, pas un etat repris du disque.
+    verifie_session: AtomicBool,
 }
 
 /// Client des appels non streames (300 s de garde-fou).
@@ -101,6 +117,7 @@ impl AppState {
 
         let cles = cfg.cles.clone();
         let preference_modele = cfg.modele_prefere.clone();
+        let cfg_perso = cfg.perso.clone();
         let adresses: HashMap<String, Vec<String>> = cfg
             .fournisseurs
             .iter()
@@ -122,12 +139,14 @@ impl AppState {
             chemin_journal: Some(dossier.join("journal.log")),
             chemin_debug: Some(dossier.join("debug-corps.json")),
             semaphore: Arc::new(tokio::sync::Semaphore::new(8)),
+            perso: Mutex::new(cfg_perso.clone()),
+            verifie_session: AtomicBool::new(false),
         }
     }
 
     /// Cle actuellement utilisee pour un fournisseur (vide si absente).
     pub fn cle_fournisseur(&self, nom: &str) -> String {
-        let Some(fournisseur) = self.cfg.fournisseurs.get(nom) else {
+        let Some(fournisseur) = self.fournisseur_infos(nom) else {
             return String::new();
         };
         self.cles
@@ -135,6 +154,51 @@ impl AppState {
             .ok()
             .and_then(|c| c.get(&fournisseur.cle_env).cloned())
             .unwrap_or_default()
+    }
+
+    /// Description d'un fournisseur, qu'il vienne de `cles.env` ou de la
+    /// liste ajoutee depuis l'interface pendant la session.
+    pub fn fournisseur_infos(&self, nom: &str) -> Option<Fournisseur> {
+        if let Some(f) = self.cfg.fournisseurs.get(nom) {
+            return Some(f.clone());
+        }
+        self.perso
+            .lock()
+            .ok()?
+            .iter()
+            .find(|p| p.nom == nom)
+            .map(|p| Fournisseur {
+                urls: p.urls.clone(),
+                cle_env: p.cle_env(),
+                entetes: Vec::new(),
+            })
+    }
+
+    /// Fournisseurs a afficher : ceux du demarrage puis ceux ajoutes depuis
+    /// l'interface, sans doublon (les seconds sont deja dans `cfg` au boot).
+    fn fournisseurs_effectifs(&self) -> Vec<(String, Fournisseur)> {
+        let mut liste: Vec<(String, Fournisseur)> = self
+            .cfg
+            .fournisseurs
+            .iter()
+            .map(|(nom, f)| (nom.clone(), f.clone()))
+            .collect();
+        if let Ok(perso) = self.perso.lock() {
+            for p in perso.iter() {
+                if !liste.iter().any(|(nom, _)| *nom == p.nom) {
+                    liste.push((
+                        p.nom.clone(),
+                        Fournisseur {
+                            urls: p.urls.clone(),
+                            cle_env: p.cle_env(),
+                            entetes: Vec::new(),
+                        },
+                    ));
+                }
+            }
+        }
+        liste.sort_by(|a, b| a.0.cmp(&b.0));
+        liste
     }
 
     /// Adresses actives d'un fournisseur (au moins une si connue).
@@ -146,21 +210,38 @@ impl AppState {
                 }
             }
         }
-        self.cfg
-            .fournisseurs
-            .get(nom)
+        self.fournisseur_infos(nom)
             .map(|f| f.urls.clone())
             .unwrap_or_default()
     }
 
-    /// Alias avec le modele prefere place en tete.
+    /// Alias avec le modele prefere place en tete, puis les modeles des
+    /// fournisseurs ajoutes depuis l'interface (rattaches a `defaut`).
     pub fn alias_effectifs(&self) -> Vec<Alias> {
         let prefere = self
             .preference_modele
             .lock()
             .ok()
             .and_then(|p| p.clone());
-        construire_alias(prefere.as_deref())
+        let mut alias = construire_alias(prefere.as_deref());
+        if let Ok(perso) = self.perso.lock() {
+            if !perso.is_empty() {
+                if let Some(defaut) = alias.iter_mut().find(|a| a.nom == "defaut") {
+                    for p in perso.iter() {
+                        for modele in &p.modeles {
+                            let cible = Cible {
+                                fournisseur: p.nom.clone(),
+                                modele: modele.clone(),
+                            };
+                            if !defaut.cibles.contains(&cible) {
+                                defaut.cibles.push(cible);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        alias
     }
 
     /// Modele prefere actuellement applique.
@@ -206,10 +287,10 @@ impl AppState {
     pub fn gestion_json(&self) -> Value {
         let alias = self.alias_effectifs();
         let mut liste: Vec<Value> = self
-            .cfg
-            .fournisseurs
+            .fournisseurs_effectifs()
             .iter()
             .map(|(nom, f)| {
+                let nom = nom.as_str();
                 let cle = self.cle_fournisseur(nom);
                 json!({
                     "id": nom,
@@ -221,7 +302,7 @@ impl AppState {
                     "cibles": alias
                         .iter()
                         .flat_map(|a| a.cibles.iter())
-                        .filter(|c| c.fournisseur == *nom)
+                        .filter(|c| c.fournisseur == nom)
                         .map(|c| c.modele.clone())
                         .collect::<Vec<_>>(),
                     // Detail par modele : le panneau affiche un badge
@@ -229,7 +310,7 @@ impl AppState {
                     "modeles": alias
                         .iter()
                         .flat_map(|a| a.cibles.iter())
-                        .filter(|c| c.fournisseur == *nom)
+                        .filter(|c| c.fournisseur == nom)
                         .map(|c| {
                             json!({
                                 "modele": c.modele,
@@ -267,7 +348,7 @@ impl AppState {
 
     /// Enregistre une cle dans le fichier et l'applique immediatement.
     pub fn enregistrer_cle(self: &Arc<Self>, nom: &str, cle: &str) -> Result<(), String> {
-        let Some(fournisseur) = self.cfg.fournisseurs.get(nom) else {
+        let Some(fournisseur) = self.fournisseur_infos(nom) else {
             return Err(format!("Fournisseur inconnu : {}", nom));
         };
         let cle = cle.trim().to_string();
@@ -287,7 +368,7 @@ impl AppState {
 
     /// Enregistre la liste d'adresses d'un fournisseur (une par ligne).
     pub fn enregistrer_adresses(self: &Arc<Self>, nom: &str, texte: &str) -> Result<(), String> {
-        let Some(fournisseur) = self.cfg.fournisseurs.get(nom) else {
+        let Some(fournisseur) = self.fournisseur_infos(nom) else {
             return Err(format!("Fournisseur inconnu : {}", nom));
         };
         let urls = decouper_adresses(texte);
@@ -315,6 +396,159 @@ impl AppState {
         ));
         self.retester_fournisseur(nom);
         Ok(())
+    }
+
+    /// Ajoute un fournisseur dans cles.env puis l'active sans redemarrer.
+    /// Ecriture atomique, sauvegarde `.bak`, commentaires conserves, et la cle
+    /// n'apparait ni dans le journal ni dans un message d'erreur.
+    pub fn ajouter_fournisseur(
+        self: &Arc<Self>,
+        nom: &str,
+        url: &str,
+        cle: &str,
+        modeles: &str,
+    ) -> Result<(), String> {
+        let nom = nom.trim().to_lowercase().replace([' ', '-', '.'], "_");
+        if nom.len() < 2 || nom.len() > 32 {
+            return Err("Nom invalide : 2 a 32 caracteres.".to_string());
+        }
+        if !nom.starts_with(|c: char| c.is_ascii_alphabetic()) {
+            return Err("Nom invalide : il doit commencer par une lettre.".to_string());
+        }
+        if !nom
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            return Err("Nom invalide : lettres, chiffres et _ uniquement.".to_string());
+        }
+        if self.fournisseur_infos(&nom).is_some() {
+            return Err(format!("Ce fournisseur existe deja : {}", nom));
+        }
+
+        let urls = decouper_adresses(url);
+        if urls.is_empty() {
+            return Err("Une adresse est necessaire.".to_string());
+        }
+        for u in &urls {
+            if !u.starts_with("http://") && !u.starts_with("https://") {
+                return Err(format!(
+                    "Adresse invalide : '{}' (http:// ou https:// attendu)",
+                    u
+                ));
+            }
+        }
+        let modeles: Vec<String> = modeles
+            .split([',', ';', '\n', '\r', ' ', '\t'])
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty())
+            .collect();
+        if modeles.is_empty() {
+            return Err("Au moins un modele est necessaire.".to_string());
+        }
+
+        // Sauvegarde avant modification. `ecrire_variable` ne remplace qu'une
+        // ligne : les commentaires et les autres variables restent intacts.
+        let _ = std::fs::copy(
+            &self.cfg.chemin_cles,
+            self.cfg.chemin_cles.with_extension("env.bak"),
+        );
+
+        let mut liste: Vec<String> = self.cfg.perso.iter().map(|p| p.nom.clone()).collect();
+        if let Ok(perso) = self.perso.lock() {
+            for p in perso.iter() {
+                if !liste.contains(&p.nom) {
+                    liste.push(p.nom.clone());
+                }
+            }
+        }
+        liste.push(nom.clone());
+
+        let perso = Perso {
+            nom: nom.clone(),
+            urls: urls.clone(),
+            modeles: modeles.clone(),
+        };
+        let ecrire = |variable: &str, valeur: &str| {
+            ecrire_variable_sans_sauvegarde(&self.cfg.chemin_cles, variable, valeur)
+                .map_err(|e| format!("Ecriture impossible : {}", e))
+        };
+        ecrire("PROXY_FOURNISSEURS", &liste.join(";"))?;
+        ecrire(&perso.variable_urls(), &urls.join(","))?;
+        ecrire(&perso.variable_modeles(), &modeles.join(","))?;
+        ecrire(&perso.cle_env(), cle.trim())?;
+
+        if let Ok(mut c) = self.cles.lock() {
+            c.insert(perso.cle_env(), cle.trim().to_string());
+        }
+        if let Ok(mut a) = self.adresses.lock() {
+            a.insert(nom.clone(), urls.clone());
+        }
+        if let Ok(mut p) = self.perso.lock() {
+            p.push(perso.clone());
+        }
+        self.journaliser(&format!(
+            "fournisseur {} ajoute depuis l'interface ({} modele(s))",
+            nom,
+            modeles.len()
+        ));
+        self.retester_fournisseur(&nom);
+        Ok(())
+    }
+
+    /// Teste une cle sur `{url}/models`, sans rien enregistrer.
+    pub async fn tester_cle(&self, url: &str, cle: &str) -> Value {
+        let base = url.trim().trim_end_matches('/');
+        let base = base.strip_suffix("/chat/completions").unwrap_or(base);
+        let cible = if base.ends_with("/models") {
+            base.to_string()
+        } else {
+            format!("{}/models", base)
+        };
+        let debut = Instant::now();
+        let reponse = self
+            .http
+            .get(&cible)
+            .timeout(std::time::Duration::from_secs(8))
+            .header("authorization", format!("Bearer {}", cle.trim()))
+            .send()
+            .await;
+        let duree_ms = debut.elapsed().as_millis() as u64;
+        match reponse {
+            Ok(r) => {
+                let statut = r.status().as_u16();
+                if !r.status().is_success() {
+                    return json!({
+                        "ok": false,
+                        "statut": statut,
+                        "erreur": format!("HTTP {}", statut),
+                        "duree_ms": duree_ms,
+                    });
+                }
+                let texte = r.text().await.unwrap_or_default();
+                let mut modeles: Vec<String> = Vec::new();
+                if let Ok(valeur) = serde_json::from_str::<Value>(&texte) {
+                    if let Some(liste) = valeur.get("data").and_then(|d| d.as_array()) {
+                        for modele in liste.iter().take(50) {
+                            if let Some(id) = modele.get("id").and_then(|i| i.as_str()) {
+                                modeles.push(id.to_string());
+                            }
+                        }
+                    }
+                }
+                json!({
+                    "ok": true,
+                    "statut": statut,
+                    "modeles": modeles,
+                    "duree_ms": duree_ms,
+                })
+            }
+            Err(e) => json!({
+                "ok": false,
+                "statut": 0,
+                "erreur": format!("{}", e),
+                "duree_ms": duree_ms,
+            }),
+        }
     }
 
     pub fn autorise(&self, entetes: &HeaderMap) -> bool {
@@ -427,6 +661,41 @@ impl AppState {
         });
     }
 
+    /// Verification de fond, une seule fois par demarrage : uniquement les
+    /// cibles jamais testees, 4 en parallele au plus, 5 s par cible.
+    pub fn sonder_les_inconnus(self: &Arc<Self>, parallelisme: usize, delai: std::time::Duration) {
+        if self.sondage.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let app = Arc::clone(self);
+        tauri::async_runtime::spawn(async move {
+            let cibles = app.pool.inconnues(&app.alias_effectifs());
+            if cibles.is_empty() {
+                app.sondage.store(false, Ordering::SeqCst);
+                return;
+            }
+            app.journaliser(&format!(
+                "verification silencieuse : {} cible(s) jamais testee(s)",
+                cibles.len()
+            ));
+            let limite = Arc::new(tokio::sync::Semaphore::new(parallelisme.max(1)));
+            let mut taches = Vec::new();
+            for cible in cibles {
+                let app_tache = Arc::clone(&app);
+                let permis = Arc::clone(&limite);
+                taches.push(tauri::async_runtime::spawn(async move {
+                    let _garde = permis.acquire_owned().await;
+                    sonder_cible_borne(&app_tache, &cible, delai).await;
+                }));
+            }
+            for tache in taches {
+                let _ = tache.await;
+            }
+            app.sondage.store(false, Ordering::SeqCst);
+            app.journaliser("verification silencieuse terminee");
+        });
+    }
+
     /// Verification de secours declenchee par un appel qui echoue.
     /// Elle ne part pas si une verification vient d'avoir lieu (60 s), afin
     /// qu'une rafale d'erreurs ne transforme pas la passerelle en sondeur fou.
@@ -443,6 +712,124 @@ impl AppState {
         }
         self.journaliser("un appel a echoue : verification automatique des fournisseurs");
         self.lancer_sondage(false);
+    }
+
+    /// Diagnostic complet et copiable, sans aucun secret.
+    pub fn diagnostic_json(
+        &self,
+        port: u16,
+        jeton: &str,
+        actif: bool,
+        depuis_s: Option<u64>,
+    ) -> Value {
+        let mut secrets: Vec<String> = self
+            .cfg
+            .cles
+            .values()
+            .filter(|v| !v.trim().is_empty())
+            .cloned()
+            .collect();
+        if let Ok(cles) = self.cles.lock() {
+            for valeur in cles.values() {
+                if !valeur.trim().is_empty() && !secrets.contains(valeur) {
+                    secrets.push(valeur.clone());
+                }
+            }
+        }
+        if !jeton.trim().is_empty() {
+            secrets.push(jeton.to_string());
+        }
+        let masquer_secrets = |texte: &str| -> String {
+            let mut sortie = texte.to_string();
+            for secret in &secrets {
+                sortie = sortie.replace(secret.as_str(), "***");
+            }
+            sortie
+        };
+        // Une URL peut porter une cle en query string : on la coupe.
+        let url_propre = |url: &str| -> String {
+            let sans_requete = url.split(['?', '#']).next().unwrap_or(url);
+            masquer_secrets(sans_requete)
+        };
+
+        let alias = self.alias_effectifs();
+        let fournisseurs: Vec<Value> = self
+            .fournisseurs_effectifs()
+            .iter()
+            .map(|(nom, f)| {
+                let mut modeles: Vec<String> = Vec::new();
+                for a in alias.iter() {
+                    for c in a.cibles.iter().filter(|c| c.fournisseur == *nom) {
+                        if !modeles.contains(&c.modele) {
+                            modeles.push(c.modele.clone());
+                        }
+                    }
+                }
+                json!({
+                    "nom": nom,
+                    "urls": f.urls.iter().map(|u| url_propre(u)).collect::<Vec<_>>(),
+                    "modeles": modeles,
+                    "cle_presente": !self.cle_fournisseur(nom).is_empty(),
+                })
+            })
+            .collect();
+
+        let mut journal: Vec<String> = self
+            .lignes_journal()
+            .iter()
+            .rev()
+            .take(80)
+            .map(|l| masquer_secrets(l))
+            .collect();
+        journal.reverse();
+
+        let genere_le = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        json!({
+            "genere_le_unix": genere_le,
+            "version": VERSION,
+            "port": port,
+            "adresse": format!("http://127.0.0.1:{}/v1", port),
+            "actif": actif,
+            "depuis_s": depuis_s,
+            "demarrage_ms": ms_depuis_demarrage(),
+            "fichier_cles": self.cfg.chemin_cles.display().to_string(),
+            "chemin_journal": self.chemin_journal.as_ref().map(|c| c.display().to_string()),
+            "dossier_donnees": dossier_donnees().display().to_string(),
+            "fournisseurs": fournisseurs,
+            "alias": alias.iter().map(|a| json!({
+                "nom": a.nom,
+                "cibles": self.pool.vue(a),
+            })).collect::<Vec<_>>(),
+            "journal": journal,
+        })
+    }
+
+    /// Constructeur minimal pour les tests : aucun fichier n'est touche.
+    #[cfg(test)]
+    pub fn pour_test(cfg: Config) -> AppState {
+        let cfg_perso = cfg.perso.clone();
+        AppState {
+            cles: Mutex::new(cfg.cles.clone()),
+            adresses: Mutex::new(HashMap::new()),
+            http: client_http(),
+            http_flux: client_flux(),
+            cfg,
+            pool: Pool::vide(),
+            debut: Instant::now(),
+            sondage: AtomicBool::new(false),
+            derniere_sonde: Mutex::new(None),
+            preference_modele: Mutex::new(None),
+            journal: Mutex::new(VecDeque::new()),
+            chemin_journal: None,
+            chemin_debug: None,
+            semaphore: Arc::new(tokio::sync::Semaphore::new(8)),
+            perso: Mutex::new(cfg_perso),
+            verifie_session: AtomicBool::new(false),
+        }
     }
 }
 
@@ -506,7 +893,8 @@ impl Service {
                         *d = Some(Instant::now());
                     }
                     srv.app.journaliser(&format!(
-                        "en ecoute sur http://127.0.0.1:{} - {} alias",
+                        "demarrage serveur : {} ms (en ecoute sur http://127.0.0.1:{} - {} alias)",
+                        ms_depuis_demarrage(),
                         srv.port,
                         srv.app.cfg.alias.len()
                     ));
@@ -577,9 +965,11 @@ impl Service {
             "depuis_s": self.depuis.lock().ok().and_then(|d| d.map(|i| i.elapsed().as_secs())),
             "version": VERSION,
             // « connecte » ne dit pas que le service tourne, mais qu'au moins
-            // un fournisseur a repondu.
-            "connecte": self.actif.load(Ordering::SeqCst) && self.app.pool.a_un_sain(),
+            // un fournisseur a repondu *pendant cette session* : un etat
+            // simplement repris du disque ne suffit pas.
+            "connecte": self.actif.load(Ordering::SeqCst) && self.app.pool.a_un_sain_verifie(),
             "sains": self.app.pool.compter_sains(),
+            "sains_verifies": self.app.pool.compter_sains_verifies(),
             "sondage": self.app.sondage.load(Ordering::SeqCst),
             "derniere_reussite_s": self.app.pool.derniere_reussite_s(),
             // Etat repris de la session precedente : age de la derniere
@@ -592,6 +982,39 @@ impl Service {
                 "cibles": self.app.pool.vue(a),
             })).collect::<Vec<_>>(),
         })
+    }
+
+    /// Ajoute un fournisseur (delegue a l'etat, qui ecrit dans cles.env).
+    pub fn ajouter_fournisseur(
+        &self,
+        nom: &str,
+        url: &str,
+        cle: &str,
+        modeles: &str,
+    ) -> Result<(), String> {
+        self.app.ajouter_fournisseur(nom, url, cle, modeles)
+    }
+
+    /// Liste des fournisseurs telle que l'affiche l'interface.
+    pub fn gestion_json(&self) -> Value {
+        self.app.gestion_json()
+    }
+
+    /// Passe de fond sur les cibles jamais testees (delegue a l'etat).
+    pub fn sonder_les_inconnus(&self, parallelisme: usize, delai: std::time::Duration) {
+        self.app.sonder_les_inconnus(parallelisme, delai);
+    }
+
+    /// Diagnostic complet et copiable. Il ne contient aucune valeur de cle,
+    /// aucun entete d'authentification et aucune query string : tout ce qui
+    /// ressemble a un secret connu est remplace par `***`.
+    pub fn diagnostic_json(&self) -> Value {
+        self.app.diagnostic_json(
+            self.port,
+            &self.jeton,
+            self.actif.load(Ordering::SeqCst),
+            Some(self.app.debut.elapsed().as_secs()),
+        )
     }
 }
 
@@ -736,10 +1159,8 @@ async fn poster(
         return Err(format!("Aucune adresse configuree pour {}", nom_fournisseur));
     }
     let entetes = app
-        .cfg
-        .fournisseurs
-        .get(nom_fournisseur)
-        .map(|f| f.entetes.clone())
+        .fournisseur_infos(nom_fournisseur)
+        .map(|f| f.entetes)
         .unwrap_or_default();
 
     let mut derniere = String::from("adresse injoignable");
@@ -780,7 +1201,11 @@ async fn poster(
 }
 
 async fn sonder_cible(app: &AppState, cible: &Cible) {
-    let Some(fournisseur) = app.cfg.fournisseurs.get(&cible.fournisseur) else {
+    sonder_cible_borne(app, cible, std::time::Duration::from_secs(25)).await
+}
+
+async fn sonder_cible_borne(app: &AppState, cible: &Cible, delai: std::time::Duration) {
+    let Some(fournisseur) = app.fournisseur_infos(&cible.fournisseur) else {
         return;
     };
 
@@ -806,13 +1231,15 @@ async fn sonder_cible(app: &AppState, cible: &Cible) {
     });
 
     let debut = Instant::now();
+    // Une sonde est une observation reelle : l'etat cesse d'etre « repris ».
+    app.verifie_session.store(true, Ordering::SeqCst);
     match poster(
         app,
         &app.http,
         &cible.fournisseur,
         &cle,
         &corps,
-        Some(std::time::Duration::from_secs(25)),
+        Some(delai),
     )
     .await
     {
@@ -1840,5 +2267,121 @@ mod tests {
             total.extend_from_slice(&morceau.unwrap());
         }
         assert_eq!(String::from_utf8_lossy(&total), "data: ok\n\n");
+    }
+
+    /// P6 : le diagnostic copiable ne doit jamais contenir une valeur de cle,
+    /// ni une query string qui en porterait une.
+    #[test]
+    fn le_diagnostic_ne_contient_aucune_cle() {
+        let mut cles = HashMap::new();
+        cles.insert(
+            "OPENROUTER_KEY".to_string(),
+            "sk-or-v1-SECRET-ABC-123".to_string(),
+        );
+        let mut fournisseurs = HashMap::new();
+        fournisseurs.insert(
+            "openrouter".to_string(),
+            Fournisseur {
+                urls: vec!["https://openrouter.ai/api/v1?api_key=sk-or-v1-SECRET-ABC-123".to_string()],
+                cle_env: "OPENROUTER_KEY".to_string(),
+                entetes: vec![("x-custom".to_string(), "valeur".to_string())],
+            },
+        );
+        let cfg = Config {
+            port: 3100,
+            jeton: "jeton-maitre-SECRET-999".to_string(),
+            cles,
+            alias: Vec::new(),
+            fournisseurs,
+            chemin_cles: std::path::PathBuf::from("C:/temp/cles.env"),
+            modele_prefere: None,
+            perso: Vec::new(),
+        };
+        let app = AppState::pour_test(cfg);
+        // Une erreur amont peut recopier une cle : le diagnostic doit la masquer.
+        if let Ok(mut journal) = app.journal.lock() {
+            journal.push_back(
+                "erreur amont : sk-or-v1-SECRET-ABC-123 / jeton-maitre-SECRET-999"
+                    .to_string(),
+            );
+        }
+        let diagnostic = app.diagnostic_json(3100, "jeton-maitre-SECRET-999", true, Some(3));
+        let texte = diagnostic.to_string();
+
+        assert!(
+            !texte.contains("SECRET-ABC-123"),
+            "une valeur de cle figure dans le diagnostic : {texte}"
+        );
+        assert!(
+            !texte.contains("jeton-maitre-SECRET-999"),
+            "le jeton maitre figure dans le diagnostic : {texte}"
+        );
+        assert!(
+            !texte.contains("api_key="),
+            "une query string figure dans le diagnostic : {texte}"
+        );
+        assert!(texte.contains("***"), "les secrets doivent etre masques");
+        assert!(texte.contains("openrouter"));
+        assert!(texte.contains("cle_presente"));
+    }
+
+    /// P8 : l'ajout d'un fournisseur ecrit dans cles.env sans perdre les
+    /// commentaires, laisse un `.bak` et n'expose jamais la cle au journal.
+    #[test]
+    fn ajouter_fournisseur_preserve_le_fichier_et_le_secret() {
+        let dossier = std::env::temp_dir().join(format!(
+            "apivault-ajout-{}-{}",
+            std::process::id(),
+            ms_depuis_demarrage()
+        ));
+        std::fs::create_dir_all(&dossier).unwrap();
+        let chemin = dossier.join("cles.env");
+        std::fs::write(
+            &chemin,
+            "\u{feff}# mon commentaire\r\nPROXY_MASTER_KEY=abc\r\n",
+        )
+        .unwrap();
+
+        let cfg = Config {
+            port: 3100,
+            jeton: "abc".to_string(),
+            cles: HashMap::new(),
+            alias: Vec::new(),
+            fournisseurs: HashMap::new(),
+            chemin_cles: chemin.clone(),
+            modele_prefere: None,
+            perso: Vec::new(),
+        };
+        let app = std::sync::Arc::new(AppState::pour_test(cfg));
+        app.ajouter_fournisseur(
+            "Mistral Test",
+            "https://api.mistral.ai/v1",
+            "cle-SECRET-42",
+            "mistral-large, mistral-small",
+        )
+        .unwrap();
+
+        let contenu = std::fs::read_to_string(&chemin).unwrap();
+        assert!(contenu.contains("# mon commentaire"));
+        assert!(contenu.contains("PROXY_MASTER_KEY=abc"));
+        assert!(contenu.contains("PROXY_FOURNISSEURS=mistral_test"));
+        assert!(contenu.contains("MISTRAL_TEST_URLS=https://api.mistral.ai/v1"));
+        assert!(contenu.contains("MISTRAL_TEST_MODELES=mistral-large,mistral-small"));
+        assert!(contenu.contains("MISTRAL_TEST_KEY=cle-SECRET-42"));
+        assert!(
+            dossier.join("cles.env.bak").exists(),
+            "la sauvegarde .bak doit exister"
+        );
+        assert_eq!(app.cle_fournisseur("mistral_test"), "cle-SECRET-42");
+
+        let journal = app.lignes_journal().join("\n");
+        assert!(
+            !journal.contains("cle-SECRET-42"),
+            "la cle ne doit jamais apparaitre dans le journal : {journal}"
+        );
+        let diagnostic = app.diagnostic_json(3100, "abc", true, None).to_string();
+        assert!(!diagnostic.contains("cle-SECRET-42"));
+
+        let _ = std::fs::remove_dir_all(&dossier);
     }
 }

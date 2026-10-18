@@ -13,7 +13,7 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 use std::os::windows::process::CommandExt;
 
 use apivault_proxy::config;
-use apivault_proxy::serveur::{AppState, Service};
+use apivault_proxy::serveur::{self, AppState, Service};
 
 
 const TACHE_DEMARRAGE: &str = "ApiVault_Proxy_Externe";
@@ -50,6 +50,51 @@ fn basculer(service: tauri::State<'_, Arc<Service>>) -> Result<(), String> {
 #[tauri::command]
 fn journal(service: tauri::State<'_, Arc<Service>>) -> Vec<String> {
     service.app.lignes_journal()
+}
+
+/// Journal de demarrage : l'interface signale qu'elle est prete (P5).
+#[tauri::command]
+fn interface_prete(service: tauri::State<'_, Arc<Service>>) -> Value {
+    let ms = serveur::ms_depuis_demarrage();
+    service
+        .app
+        .journaliser(&format!("demarrage interface : {} ms", ms));
+    service
+        .app
+        .journaliser(&format!("demarrage total : {} ms", ms));
+    serde_json::json!({ "ms": ms })
+}
+
+/// Diagnostic copiable, sans aucune cle ni query string (P6).
+#[tauri::command]
+fn diagnostic(service: tauri::State<'_, Arc<Service>>) -> Value {
+    service.diagnostic_json()
+}
+
+/// Ajout d'un fournisseur depuis l'interface (P8).
+#[tauri::command]
+fn ajouter_fournisseur(
+    service: tauri::State<'_, Arc<Service>>,
+    nom: String,
+    url: String,
+    cle: String,
+    modeles: String,
+) -> Result<Value, String> {
+    service
+        .inner()
+        .clone()
+        .ajouter_fournisseur(&nom, &url, &cle, &modeles)?;
+    Ok(service.gestion_json())
+}
+
+/// Test d'une cle avant enregistrement (P8) : rien n'est ecrit.
+#[tauri::command]
+async fn tester_cle(
+    service: tauri::State<'_, Arc<Service>>,
+    url: String,
+    cle: String,
+) -> Result<Value, String> {
+    Ok(service.app.tester_cle(&url, &cle).await)
 }
 
 #[tauri::command]
@@ -366,10 +411,18 @@ fn construire_icone(app: &tauri::App) -> tauri::Result<()> {
 }
 
 fn main() {
+    // Horloge du processus posee au plus tot, pour le journal de demarrage.
+    let debut = std::time::Instant::now();
+    let _ = serveur::ms_depuis_demarrage();
+
     let configuration = config::Config::charger();
+    let ms_config = debut.elapsed().as_millis();
     let port = configuration.port;
     let jeton = configuration.jeton.clone();
     let etat_partage = Arc::new(AppState::nouveau(configuration));
+    let ms_pool = debut.elapsed().as_millis();
+    etat_partage.journaliser(&format!("demarrage config : {} ms", ms_config));
+    etat_partage.journaliser(&format!("demarrage pool : {} ms", ms_pool));
     let service = Service::nouveau(port, jeton, etat_partage);
 
     tauri::Builder::default()
@@ -395,6 +448,10 @@ fn main() {
             enregistrer_cle,
             enregistrer_adresses,
             definir_modele_prefere,
+            interface_prete,
+            diagnostic,
+            ajouter_fournisseur,
+            tester_cle,
             quitter
         ])
         .setup(|app| {
@@ -403,19 +460,16 @@ fn main() {
             srv.demarrer();
 
             // Aucune interrogation au demarrage : l'etat de la derniere session
-            // est repris tel quel depuis etat-pool.json. On ne verifie qu'une
-            // fois si ce fichier ne contient encore aucune verification (toute
-            // premiere installation), sinon c'est un echec d'appel qui
-            // declenchera la verification.
-            if srv.app.pool.derniere_verification_s().is_none() {
-                let verif = srv.app.clone();
+            // est repris tel quel depuis etat-pool.json. Une seule passe de
+            // fond, 60 s apres le lancement, et uniquement sur les cibles
+            // jamais testees (4 en parallele, 5 s chacune). Un echec d'appel
+            // reel peut aussi declencher une verification avant cela.
+            {
+                let verif = srv.clone();
                 tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    verif.lancer_sondage(false);
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    verif.sonder_les_inconnus(4, std::time::Duration::from_secs(5));
                 });
-            } else {
-                srv.app
-                    .journaliser("etat repris de la derniere session (aucune sonde au demarrage)");
             }
 
             // L'icone de notification suit l'etat reel (vert / orange / rouge)

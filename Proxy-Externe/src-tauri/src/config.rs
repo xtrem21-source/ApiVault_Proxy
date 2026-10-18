@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Cible {
     pub fournisseur: String,
     pub modele: String,
@@ -40,6 +40,26 @@ impl Fournisseur {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct Perso {
+    pub nom: String,
+    pub urls: Vec<String>,
+    pub modeles: Vec<String>,
+}
+
+impl Perso {
+    /// Variable `cles.env` qui contient la cle de ce fournisseur.
+    pub fn cle_env(&self) -> String {
+        format!("{}_KEY", self.nom.to_uppercase())
+    }
+    pub fn variable_urls(&self) -> String {
+        format!("{}_URLS", self.nom.to_uppercase())
+    }
+    pub fn variable_modeles(&self) -> String {
+        format!("{}_MODELES", self.nom.to_uppercase())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub port: u16,
@@ -51,6 +71,8 @@ pub struct Config {
     /// Modele choisi dans l'interface. Il est place en tete des alias
     /// `defaut` et `rapide`, et en tete de `gratuit` uniquement s'il est gratuit.
     pub modele_prefere: Option<String>,
+    /// Fournisseurs ajoutes depuis l'interface (`PROXY_FOURNISSEURS`).
+    pub perso: Vec<Perso>,
 }
 
 impl Config {
@@ -96,6 +118,8 @@ impl Config {
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty());
 
+        let perso = construire_perso(&valeurs);
+
         Config {
             port,
             jeton,
@@ -104,6 +128,7 @@ impl Config {
             fournisseurs: construire_fournisseurs(&valeurs),
             chemin_cles: chemin,
             modele_prefere,
+            perso,
         }
     }
 
@@ -120,6 +145,43 @@ pub fn decouper_adresses(texte: &str) -> Vec<String> {
         .map(|s| s.trim().trim_end_matches('/').to_string())
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+/// Lit `PROXY_FOURNISSEURS` (noms separes par des points-virgules) puis, pour
+/// chacun, `<NOM>_URLS` et `<NOM>_MODELES`. La cle reste dans `<NOM>_KEY`.
+fn construire_perso(valeurs: &HashMap<String, String>) -> Vec<Perso> {
+    let Some(liste) = valeurs.get("PROXY_FOURNISSEURS") else {
+        return Vec::new();
+    };
+    let mut resultat = Vec::new();
+    for nom in liste.split([';', ',']) {
+        let nom = nom.trim().to_lowercase();
+        if nom.is_empty() {
+            continue;
+        }
+        let urls = valeurs
+            .get(&format!("{}_URLS", nom.to_uppercase()))
+            .map(|v| decouper_adresses(v))
+            .unwrap_or_default();
+        let modeles = valeurs
+            .get(&format!("{}_MODELES", nom.to_uppercase()))
+            .map(|v| {
+                v.split(',')
+                    .map(|m| m.trim().to_string())
+                    .filter(|m| !m.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if urls.is_empty() || modeles.is_empty() {
+            continue;
+        }
+        resultat.push(Perso {
+            nom,
+            urls,
+            modeles,
+        });
+    }
+    resultat
 }
 
 fn construire_fournisseurs(valeurs: &HashMap<String, String>) -> HashMap<String, Fournisseur> {
@@ -174,6 +236,19 @@ fn construire_fournisseurs(valeurs: &HashMap<String, String>) -> HashMap<String,
         "NVIDIA_KEY",
         vec![],
     );
+
+    // Fournisseurs ajoutes depuis l'interface : ils sont declares dans
+    // PROXY_FOURNISSEURS et pointent vers <NOM>_URLS / <NOM>_KEY.
+    for p in construire_perso(valeurs) {
+        m.insert(
+            p.nom.clone(),
+            Fournisseur {
+                urls: p.urls.clone(),
+                cle_env: p.cle_env(),
+                entetes: Vec::new(),
+            },
+        );
+    }
 
     m
 }
@@ -343,9 +418,28 @@ fn ajouter_ligne(chemin: &Path, ligne: &str) -> std::io::Result<()> {
 /// Remplace la valeur d'une variable dans le fichier de cles, en conservant
 /// les commentaires et les autres lignes. La variable est ajoutee si absente.
 pub fn ecrire_variable(chemin: &Path, variable: &str, valeur: &str) -> std::io::Result<()> {
+    ecrire_variable_options(chemin, variable, valeur, true)
+}
+
+/// Identique a `ecrire_variable`, mais permet de ne pas ecraser la sauvegarde
+/// `.bak` : utile quand plusieurs variables sont ecrites d'un seul geste.
+pub fn ecrire_variable_sans_sauvegarde(
+    chemin: &Path,
+    variable: &str,
+    valeur: &str,
+) -> std::io::Result<()> {
+    ecrire_variable_options(chemin, variable, valeur, false)
+}
+
+fn ecrire_variable_options(
+    chemin: &Path,
+    variable: &str,
+    valeur: &str,
+    sauvegarde: bool,
+) -> std::io::Result<()> {
     // Sauvegarde de la version precedente (une seule generation) : une cle
     // effacee par erreur reste ainsi recuperable dans cles.env.bak.
-    if chemin.exists() {
+    if sauvegarde && chemin.exists() {
         let _ = std::fs::copy(chemin, chemin.with_extension("env.bak"));
     }
 
@@ -370,7 +464,13 @@ pub fn ecrire_variable(chemin: &Path, variable: &str, valeur: &str) -> std::io::
 
     let mut texte = lignes.join("\r\n");
     texte.push_str("\r\n");
-    std::fs::write(chemin, texte)
+    // Ecriture atomique : fichier temporaire dans le meme dossier puis
+    // renommage (MoveFileEx avec REPLACE_EXISTING sur Windows). Une coupure
+    // de courant ne laisse jamais un cles.env tronque.
+    let temporaire = chemin.with_extension("env.tmp");
+    std::fs::write(&temporaire, texte)?;
+    std::fs::rename(&temporaire, chemin)?;
+    Ok(())
 }
 
 /// Persiste le modele prefere dans le fichier de cles. Une valeur vide

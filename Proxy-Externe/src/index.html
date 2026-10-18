@@ -18,20 +18,23 @@
     --warn: #f59e0b;
   }
   * { box-sizing: border-box; }
-  html, body { height: 100%; }
+  /* La page elle-meme est le seul conteneur defilant : aucun ancetre ne doit
+     couper l'effet sticky (height:100% sur body limitait la zone collante). */
+  html { height: auto; }
   body {
+    min-height: 100%;
     margin: 0;
     background: radial-gradient(1200px 600px at 20% -10%, #16233a 0%, var(--fond) 55%);
     color: var(--texte);
     font: 14px/1.5 system-ui, "Segoe UI", sans-serif;
-    padding: 18px;
+    padding: 0;
   }
+  .contenu { padding: 0 18px 18px; }
   /* Bandeau fixe : nom + etat + modele par defaut restent visibles. */
   .barre-fixe {
     position: sticky;
-    top: -18px;
-    z-index: 50;
-    margin: -18px -18px 12px;
+    top: 0;
+    z-index: 60;
     padding: 18px 18px 10px;
     background: rgba(11, 15, 20, .94);
     backdrop-filter: blur(10px);
@@ -225,7 +228,7 @@
 
   .voile {
     display: none;
-    position: fixed; inset: 0; z-index: 50;
+    position: fixed; inset: 0; z-index: 100;
     background: rgba(4,8,12,.74);
     backdrop-filter: blur(2px);
     padding: 24px;
@@ -292,6 +295,25 @@
     .grille { grid-template-columns: 1fr; }
     .tete { flex-direction: column; }
   }
+  /* P4 : bandeau d'initialisation */
+  .init-anim { animation: pulse-init 1.1s ease-in-out infinite; }
+  @keyframes pulse-init { 0%, 100% { opacity: .55 } 50% { opacity: 1 } }
+  /* P2 : copie par double-clic */
+  code[data-copiable] { cursor: copy; }
+  .copie-flash { margin-left: 8px; color: var(--ok); font-size: 11px; font-weight: 700; }
+  .copie-flash[hidden] { display: none; }
+  /* P3/P9/P10 */
+  .etat-repris { color: var(--doux); font-size: 11px; }
+  .aucun-defaut { color: var(--warn); font-size: 11px; font-weight: 700; }
+  .badge-injoignable { color: #ffd9a3; background: rgba(245,158,11,.14); border-color: rgba(245,158,11,.4); }
+  .badge.repris { color: var(--doux); background: rgba(148,163,184,.12); border-color: rgba(148,163,184,.35); }
+  /* P12 : gestion superieure */
+  .super-ia { border-top: 1px solid var(--bord); margin-top: 14px; padding-top: 12px; }
+  .super-ia h3 { margin: 0 0 10px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--doux); }
+  .super-ia label.choix { display: block; margin: 8px 0; color: var(--doux); font-size: 12px; }
+  .super-ia select { width: 100%; margin-top: 4px; opacity: .6; }
+  /* P8 : formulaire fournisseur */
+  .form-fournisseur { display: grid; gap: 8px; margin-top: 12px; }
 </style>
 </head>
 <body>
@@ -306,7 +328,7 @@
     </div>
     <div class="etat" data-tip="tip_etat">
       <span id="pastille" class="pastille"></span>
-      <span id="etat-texte">Connexion…</span>
+      <span id="etat-texte" class="init-anim">initialisation…</span>
     </div>
   </div>
 
@@ -315,12 +337,14 @@
     <div class="bandeau-texte">
       <div class="bandeau-ligne">
         <span class="bandeau-cle" data-i18n="modele_charge">Modèle chargé</span>
-        <span class="bandeau-valeur" id="modele-valeur">—</span>
+        <span class="bandeau-valeur init-anim" id="modele-valeur">initialisation…</span>
       </div>
       <div class="bandeau-detail" id="bandeau-detail">—</div>
     </div>
   </div>
   </div>
+
+  <div class="contenu">
 
   <div class="grille">
     <section class="carte">
@@ -341,11 +365,6 @@
         <input type="checkbox" id="case-demarrage" />
         <span data-i18n="demarrage_windows">Démarrer avec Windows</span>
       </label>
-      <label class="bascule desactivee" data-tip="astuce_super_ia">
-        <input type="checkbox" id="case-super-ia" disabled />
-        <span data-i18n="super_ia">Super IA</span>
-        <span class="badge-bientot" data-i18n="bientot">bientôt</span>
-      </label>
       <div class="astuce" style="margin-top:2px" data-i18n="astuce_demarrage">Se lance 20 secondes après l'ouverture de session, réduit dans la zone de notification.</div>
     </section>
 
@@ -361,7 +380,25 @@
       </div>
       <div class="astuce">
         <span data-i18n="astuce_jeton_1">À coller dans le champ « clé API » du client, avec l'adresse</span>
-        <code id="adresse-2">http://127.0.0.1:3100/v1</code><span data-i18n="astuce_jeton_2">.</span>
+        <code id="adresse-2" data-copiable="1" data-tip="tip_copier_adresse">http://127.0.0.1:3100/v1</code><span id="copie-adresse" class="copie-flash" hidden data-i18n="copie">copié</span><span data-i18n="astuce_jeton_2">.</span>
+      </div>
+      <div class="super-ia">
+        <h3 data-i18n="gestion_superieure">Gestion supérieure</h3>
+        <label class="bascule desactivee" data-tip="astuce_super_ia">
+          <input type="checkbox" id="case-super-ia" disabled />
+          <span data-i18n="super_ia">Super IA</span>
+          <span class="badge-bientot" data-i18n="bientot">bientôt</span>
+        </label>
+        <label class="choix"><span data-i18n="modele_principal">Modèle principal</span>
+          <select id="super-modele-principal" disabled>
+            <option data-i18n="non_disponible">indisponible</option>
+          </select>
+        </label>
+        <label class="choix"><span data-i18n="modele_reflexion">Modèle de réflexion</span>
+          <select id="super-modele-reflexion" disabled>
+            <option data-i18n="non_disponible">indisponible</option>
+          </select>
+        </label>
       </div>
     </section>
   </div>
@@ -397,7 +434,9 @@
 
   <div class="pied">
     <span data-i18n="pied">Les clés restent sur ce poste. Aucune donnée ne transite par un serveur tiers.</span>
+    <button id="btn-copier-diag" class="mini" data-tip="tip_copier_diag" data-i18n="copier_diag">Copier le diagnostic</button>
     <button id="btn-quitter" class="mini danger" data-tip="tip_quitter" data-i18n="quitter">Quitter</button>
+  </div>
   </div>
 
   <div id="voile" class="voile">
@@ -410,6 +449,18 @@
         <button id="btn-fermer-gestion" class="mini" data-tip="tip_fermer" data-i18n="fermer">Fermer</button>
       </div>
       <div id="liste-fournisseurs"></div>
+      <form id="form-fournisseur" class="form-fournisseur" autocomplete="off">
+        <div class="titre-panneau" data-i18n="ajouter_fournisseur">Ajouter un fournisseur</div>
+        <input id="ff-nom" spellcheck="false" placeholder="nom (ex. mistral)" data-tip="tip_ff_nom" />
+        <input id="ff-url" spellcheck="false" placeholder="https://api.exemple.com/v1" data-tip="tip_ff_url" />
+        <input id="ff-cle" type="password" spellcheck="false" placeholder="clé API" data-tip="tip_ff_cle" />
+        <input id="ff-modeles" spellcheck="false" placeholder="modele-1, modele-2" data-tip="tip_ff_modeles" />
+        <div class="rangee">
+          <button id="btn-tester-cle" type="button" class="mini" data-tip="tip_tester_cle" data-i18n="tester_cle">Tester la clé</button>
+          <button id="btn-ajouter-fournisseur" type="submit" class="principal" data-i18n="enregistrer">Enregistrer</button>
+        </div>
+        <div id="ff-resultat" class="astuce"></div>
+      </form>
       <div class="astuce" id="chemin-gestion"></div>
     </div>
   </div>
@@ -431,6 +482,13 @@
       derniere_reussite: "Dernière réponse reçue",
       etat_repris_titre: "État des modèles",
       etat_repris: "Vérifié {d}",
+      etat_repris_badge: "repris",
+      dernier_etat_connu: "dernier état connu : {n} modèle(s)",
+      diag_erreur: "diagnostic indisponible",
+      ff_requis: "Nom, adresse, clé et au moins un modèle sont nécessaires.",
+      test_en_cours: "Test de la clé…",
+      cle_ok: "Clé acceptée — {n} modèle(s) listé(s) en {ms} ms.",
+      cle_ko: "Clé refusée ou injoignable (HTTP {statut}). {detail}",
       jamais_verifie: "Aucune vérification enregistrée",
       demarrage_windows: "Démarrer avec Windows",
       astuce_demarrage: "Se lance 20 secondes après l'ouverture de session, réduit dans la zone de notification.",
@@ -441,7 +499,7 @@
       fichier_cles: "Fichier de clés",
       demarrer: "Démarrer",
       arreter: "Arrêter",
-      gestion: "Gestion",
+      gestion: "Fournisseurs",
       jeton_titre: "Jeton d'accès",
       voir: "Voir",
       masquer: "Masquer",
@@ -506,7 +564,7 @@
       tip_cible_inconnu: "Ce modèle n'a pas encore été testé depuis le dernier rafraîchissement.",
       tip_cible_inconnu_err: "Le dernier test a échoué : {raison}. La passerelle réessaiera automatiquement.",
       tip_erreur_brute: "Réponse du fournisseur : {e}",
-      gestion_titre: "Gestion des clés",
+      gestion_titre: "Fournisseurs",
       gestion_sous: "Chaque clé est enregistrée dans le fichier local et prise en compte tout de suite : inutile de redémarrer.",
       fermer: "Fermer",
       cle_actuelle: "Clé enregistrée",
@@ -565,6 +623,25 @@
       tip_supprimer_adresse: "Retire cette adresse de la liste.",
       tip_ajouter_adresse: "Ajoute une ligne pour une autre adresse du même fournisseur.",
       tip_resultat: "Résultat du dernier test pour ce fournisseur, mis à jour automatiquement.",
+      copier_diag: "Copier le diagnostic",
+      tip_copier_diag: "Copie un JSON de diagnostic : version, uptime, port, état des cibles, cinq derniers identifiants de requête et chemins de configuration. Aucune clé, aucun en-tête d'autorisation.",
+      gestion_superieure: "Gestion supérieure",
+      modele_principal: "Modèle principal",
+      modele_reflexion: "Modèle de réflexion",
+      non_disponible: "indisponible",
+      ajouter_fournisseur: "Ajouter un fournisseur",
+      tip_ff_nom: "Nom court, sans espace (ex. mistral). Il sert de préfixe aux variables du fichier de clés.",
+      tip_ff_url: "URL de base de l'API, telle que le fournisseur la documente (se termine souvent par /v1).",
+      tip_ff_cle: "Clé API du fournisseur. Elle n'est jamais réaffichée en clair après l'enregistrement.",
+      tip_ff_modeles: "Un ou plusieurs modèles séparés par des virgules. Ils sont ajoutés à l'alias « defaut ».",
+      tester_cle: "Tester la clé",
+      tip_tester_cle: "Envoie une requête minimale (liste des modèles) avec un délai maximum de 8 secondes.",
+      fournisseur_ajoute: "Fournisseur {nom} ajouté.",
+      aucun_defaut: "aucun défaut",
+      non_joignable: "non joignable",
+      tip_non_joignable: "Dernière erreur : {raison} ({d}). La sélection reste possible, vous êtes seulement averti.",
+      etat_repris_session: "État repris au démarrage — {d}",
+      jamais_verifie_session: "État repris au démarrage — jamais vérifié",
     },
     en: {
       sous_titre: "OpenAI-compatible local gateway",
@@ -576,6 +653,13 @@
       derniere_reussite: "Last response received",
       etat_repris_titre: "Model status",
       etat_repris: "Checked {d}",
+      etat_repris_badge: "restored",
+      dernier_etat_connu: "last known state: {n} model(s)",
+      diag_erreur: "diagnostic unavailable",
+      ff_requis: "Name, address, key and at least one model are required.",
+      test_en_cours: "Testing the key…",
+      cle_ok: "Key accepted — {n} model(s) listed in {ms} ms.",
+      cle_ko: "Key refused or unreachable (HTTP {statut}). {detail}",
       jamais_verifie: "No check recorded yet",
       demarrage_windows: "Start with Windows",
       astuce_demarrage: "Starts 20 seconds after you sign in, minimised to the notification area.",
@@ -586,7 +670,7 @@
       fichier_cles: "Key file",
       demarrer: "Start",
       arreter: "Stop",
-      gestion: "Manage",
+      gestion: "Providers",
       jeton_titre: "Access token",
       voir: "Show",
       masquer: "Hide",
@@ -651,7 +735,7 @@
       tip_cible_inconnu: "This model has not been tested since the last refresh.",
       tip_cible_inconnu_err: "The last test failed: {raison}. The gateway will retry automatically.",
       tip_erreur_brute: "Provider response: {e}",
-      gestion_titre: "Key management",
+      gestion_titre: "Providers",
       gestion_sous: "Each key is saved in the local file and applied immediately: no restart needed.",
       fermer: "Close",
       cle_actuelle: "Saved key",
@@ -710,6 +794,25 @@
       tip_supprimer_adresse: "Removes this address from the list.",
       tip_ajouter_adresse: "Adds a line for another address of the same provider.",
       tip_resultat: "Result of the latest test for this provider, updated automatically.",
+      copier_diag: "Copy diagnostic",
+      tip_copier_diag: "Copies a diagnostic JSON: version, uptime, port, target states, last five request ids and configuration paths. No key, no authorization header.",
+      gestion_superieure: "Advanced",
+      modele_principal: "Main model",
+      modele_reflexion: "Reasoning model",
+      non_disponible: "unavailable",
+      ajouter_fournisseur: "Add a provider",
+      tip_ff_nom: "Short name, no spaces (e.g. mistral). It prefixes the variables written in the key file.",
+      tip_ff_url: "Base URL of the API, as documented by the provider (often ends with /v1).",
+      tip_ff_cle: "Provider API key. It is never displayed in clear after saving.",
+      tip_ff_modeles: "One or more models separated by commas. They are appended to the “defaut” alias.",
+      tester_cle: "Test key",
+      tip_tester_cle: "Sends a minimal request (model list) with an 8 second timeout.",
+      fournisseur_ajoute: "Provider {nom} added.",
+      aucun_defaut: "no default",
+      non_joignable: "unreachable",
+      tip_non_joignable: "Last error: {raison} ({d}). Selection is still allowed, you are only warned.",
+      etat_repris_session: "State restored at startup — {d}",
+      jamais_verifie_session: "State restored at startup — never checked",
     },
   };
 
@@ -856,8 +959,11 @@ function annulerConfirmationEffacement() {
 
   function badgeCible(c) {
     const span = document.createElement("span");
-    span.className = "badge " + c.statut;
-    span.textContent = t("etat_" + c.statut);
+    // Un etat repris du disque n'est pas une mesure de cette session : il ne
+    // doit jamais passer pour joignable.
+    const repris = c.statut === "sain" && c.verifie === false;
+    span.className = "badge " + (repris ? "repris" : c.statut);
+    span.textContent = repris ? t("etat_repris_badge") : t("etat_" + c.statut);
     return span;
   }
 
@@ -896,6 +1002,16 @@ function annulerConfirmationEffacement() {
 
   function infobulleCible(c, aliasNom) {
     const lignes = [];
+    // P3 : un candidat restaure n'est jamais annonce comme joignable ; on dit
+    // d'ou vient l'information et depuis quand elle date.
+    if (c.statut === "sain" && c.verifie === false) {
+      const quand = dernierEtat && dernierEtat.derniere_verification_s !== null && dernierEtat.derniere_verification_s !== undefined
+        ? duree(dernierEtat.derniere_verification_s)
+        : null;
+      lignes.push(quand
+        ? t("etat_repris_session", { d: quand })
+        : t("jamais_verifie_session"));
+    }
     if (c.statut === "sain") {
       lignes.push(t("tip_cible_sain", { alias: aliasNom }));
       if (c.latence_ms !== null && c.latence_ms !== undefined) {
@@ -960,6 +1076,27 @@ function annulerConfirmationEffacement() {
         const badge = badgeCible(c);
         badge.dataset.tipTexte = bulle;
         tdEtat.appendChild(badge);
+        // P10 : signaler clairement l'injoignable, sans empecher la selection.
+        if (["en_panne", "en_pause", "epuise"].includes(c.statut)) {
+          const injoignable = document.createElement("span");
+          injoignable.className = "badge badge-injoignable";
+          injoignable.textContent = t("non_joignable");
+          const quand = c.derniere_utilisation_s !== null && c.derniere_utilisation_s !== undefined
+            ? t("il_y_a", { d: duree(c.derniere_utilisation_s) })
+            : "—";
+          // P10 : la derniere erreur telle qu'elle a ete observee, pas
+          // seulement sa categorie.
+          const resume = raison(c.erreur) || t("raison_inconnue");
+          const brut = String(c.erreur || "").trim();
+          const texteErreur = brut && brut.length <= 120 && !resume.toLowerCase().includes(brut.toLowerCase())
+            ? resume + " — « " + brut + " »"
+            : resume;
+          injoignable.dataset.tipTexte = t("tip_non_joignable", {
+            raison: texteErreur,
+            d: quand,
+          });
+          tdEtat.appendChild(injoignable);
+        }
         tr.appendChild(tdEtat);
 
         const tdDetail = cellule(detailCible(c), "cible");
@@ -986,7 +1123,10 @@ function annulerConfirmationEffacement() {
         tr.classList.add("ligne-cible");
         tr.tabIndex = 0;
         tr.setAttribute("role", "button");
-        const choisirModele = async () => {
+        const choisirModele = async (e) => {
+          // Le double-clic desélectionne : le second clic ne doit pas
+          // re-selectionner le modele avant que `dblclick` n'arrive.
+          if (e && e.detail > 1) return;
           preferredModel = c.modele;
           localStorage.setItem("preferredModel", preferredModel);
           appliquerSelectionModele();
@@ -1001,7 +1141,26 @@ function annulerConfirmationEffacement() {
             console.warn("modele prefere non persiste :", err);
           }
         };
+        const annulerModele = async () => {
+          // P9 : double-clic sur l'etoile (ou la ligne) => plus de defaut.
+          // Repli automatique sur le premier modele joignable, sans choix
+          // persistant.
+          if (preferredModel !== c.modele) return;
+          preferredModel = null;
+          localStorage.removeItem("preferredModel");
+          appliquerSelectionModele();
+          rendreBandeau(dernierEtat);
+          try {
+            await invoke("definir_modele_prefere", { modele: null });
+          } catch (err) {
+            console.warn("modele prefere non efface :", err);
+          }
+        };
         tr.addEventListener("click", choisirModele);
+        tr.addEventListener("dblclick", (e) => {
+          e.preventDefault();
+          annulerModele();
+        });
         tr.addEventListener("keydown", (e) => {
           if (e.target !== tr) return;
           if (e.key === "Enter" || e.key === " ") {
@@ -1038,7 +1197,9 @@ function annulerConfirmationEffacement() {
     for (const nom of noms) {
       const a = (alias || []).find((x) => x.nom === nom);
       if (!a) continue;
-      const c = (a.cibles || []).find((x) => x.statut === "sain");
+      // Un candidat repris du disque n'est pas « joignable » : on ne le
+      // presente pas comme le modele actif tant qu'il n'a pas repondu.
+      const c = (a.cibles || []).find((x) => x.statut === "sain" && x.verifie !== false);
       if (c) return { alias: nom, cible: c };
     }
     return null;
@@ -1053,13 +1214,15 @@ function annulerConfirmationEffacement() {
         if (vus.has(identifiant)) return;
         vus.add(identifiant);
         if (!resume.has(c.fournisseur)) {
-          resume.set(c.fournisseur, { sains: 0, total: 0, erreur: null, enAttente: 0, modeles: [] });
+          resume.set(c.fournisseur, { sains: 0, repris: 0, total: 0, erreur: null, enAttente: 0, modeles: [] });
         }
         const r = resume.get(c.fournisseur);
         r.total += 1;
-        if (c.statut === "sain") {
+        if (c.statut === "sain" && c.verifie !== false) {
           r.sains += 1;
           r.modeles.push(c.modele);
+        } else if (c.statut === "sain") {
+          r.repris += 1;
         } else if (c.statut === "en_pause") r.enAttente += 1;
         if (!r.erreur && c.erreur) r.erreur = c.erreur;
       });
@@ -1090,8 +1253,15 @@ function annulerConfirmationEffacement() {
         if (r.modeles.length) texte += " — " + r.modeles.join(", ");
         if (r.enAttente > 0) texte += " · " + r.enAttente + " " + t("etat_en_pause");
         el.textContent = texte;
+      } else if (r.repris > 0) {
+        // P3 : aucun candidat confirme dans cette session, mais un etat
+        // repris du disque existe. On le dit sans le presenter comme sain.
+        el.classList.add("limite");
+        el.textContent = t("dernier_etat_connu", { n: r.repris });
+        el.dataset.tipTexte = e.derniere_verification_s !== null && e.derniere_verification_s !== undefined
+          ? t("etat_repris_session", { d: duree(e.derniere_verification_s) })
+          : t("jamais_verifie_session");
       } else {
-        // Check if key present but no models responding
         const f = gestionCourante?.fournisseurs?.find(f => f.id === id);
         const hasKey = f && f.cle_presente;
         const limite = r.erreur && /\b429\b/.test(String(r.erreur));
@@ -1165,8 +1335,12 @@ function annulerConfirmationEffacement() {
         : displayModele;
     } else if (!e.actif) {
       valeur.textContent = t("modele_inactif");
-    } else {
+    } else if (actif) {
       valeur.textContent = actif.alias + " · " + actif.cible.fournisseur + "/" + actif.cible.modele;
+      if (!preferredModel) valeur.textContent += " (" + t("aucun_defaut") + ")";
+    } else {
+      // P3 : que des etats repris du disque, aucun candidat confirme.
+      valeur.textContent = t("aucun_dispo");
     }
 
     detail.innerHTML = "";
@@ -1187,6 +1361,9 @@ function annulerConfirmationEffacement() {
       if (r.sains > 0) {
         span.className = "fournisseur-ok";
         span.textContent = nom + " : " + r.modeles.join(", ");
+      } else if (r.repris > 0) {
+        span.className = "fournisseur-ko";
+        span.textContent = nom + " : " + t("dernier_etat_connu", { n: r.repris });
       } else {
         span.className = "fournisseur-ko";
         span.textContent = nom + " : " + t("aucun_modele_fournisseur");
@@ -1229,10 +1406,22 @@ function annulerConfirmationEffacement() {
       } else if (e.connecte) {
         pastille.classList.add("actif");
         $("etat-texte").textContent = t("llm_connecte");
+      } else if (e.sains > 0) {
+        // P3 : etat repris du disque, pas encore reconfirme dans cette session.
+        pastille.classList.add("attente");
+        $("etat-texte").textContent =
+          e.derniere_verification_s === null || e.derniere_verification_s === undefined
+            ? t("jamais_verifie_session")
+            : t("etat_repris_session", { d: duree(e.derniere_verification_s) });
       } else {
         pastille.classList.add("alerte");
         $("etat-texte").textContent = t("aucun_dispo");
       }
+
+      // P4 : l'animation « initialisation… » disparait d'elle-meme des la
+      // premiere reponse du service.
+      $("etat-texte").classList.remove("init-anim");
+      $("modele-valeur").classList.remove("init-anim");
 
       $("btn-demarrer").disabled = e.actif;
       $("btn-arreter").disabled = !e.actif;
@@ -1240,7 +1429,8 @@ function annulerConfirmationEffacement() {
       const totalUnique = new Set(
         (e.alias || []).flatMap((a) => (a.cibles || []).map((c) => c.fournisseur + "/" + c.modele))
       ).size;
-      $("sains").textContent = e.sains + " / " + totalUnique;
+      // P3 : seuls les modèles confirmés pendant cette session comptent.
+      $("sains").textContent = (e.sains_verifies !== undefined ? e.sains_verifies : e.sains) + " / " + totalUnique;
       $("reussite").textContent =
         e.derniere_reussite_s === null || e.derniere_reussite_s === undefined
           ? "—"
@@ -1726,6 +1916,109 @@ function annulerConfirmationEffacement() {
   });
 
   $("btn-quitter").addEventListener("click", () => invoke("quitter"));
+
+  // P2 : double-clic sur l'adresse = copie exacte du texte affiche.
+  async function copierAdresse() {
+    const valeur = $("adresse-2").textContent;
+    try {
+      await navigator.clipboard.writeText(valeur);
+    } catch (_) {
+      const zone = document.createElement("textarea");
+      zone.value = valeur;
+      document.body.appendChild(zone);
+      zone.select();
+      document.execCommand("copy");
+      zone.remove();
+    }
+    const flash = $("copie-adresse");
+    flash.hidden = false;
+    setTimeout(() => { flash.hidden = true; }, 1200);
+  }
+  $("adresse-2").addEventListener("dblclick", copierAdresse);
+
+  // P6 : diagnostic copiable, sans aucune cle.
+  $("btn-copier-diag").addEventListener("click", async () => {
+    const bouton = $("btn-copier-diag");
+    try {
+      const diagnostic = await invoke("diagnostic");
+      const texte = JSON.stringify(diagnostic, null, 2);
+      try {
+        await navigator.clipboard.writeText(texte);
+      } catch (_) {
+        const zone = document.createElement("textarea");
+        zone.value = texte;
+        document.body.appendChild(zone);
+        zone.select();
+        document.execCommand("copy");
+        zone.remove();
+      }
+      bouton.textContent = t("copie");
+    } catch (err) {
+      bouton.textContent = t("diag_erreur");
+      console.error("diagnostic impossible :", err);
+    }
+    setTimeout(() => {
+      bouton.textContent = t("copier_diag");
+      appliquerLangue();
+    }, 2200);
+  });
+
+  // P8 : ajout d'un fournisseur et test de cle avant enregistrement.
+  $("btn-tester-cle").addEventListener("click", async () => {
+    const resultat = $("ff-resultat");
+    const url = $("ff-url").value.trim();
+    const cle = $("ff-cle").value.trim();
+    if (!url || !cle) {
+      resultat.textContent = t("ff_requis");
+      return;
+    }
+    resultat.textContent = t("test_en_cours");
+    try {
+      const r = await invoke("tester_cle", { url, cle });
+      if (r.ok) {
+        const n = (r.modeles || []).length;
+        resultat.textContent = t("cle_ok", { n, ms: r.duree_ms });
+      } else {
+        resultat.textContent = t("cle_ko", { statut: r.statut, detail: r.erreur || "" });
+      }
+    } catch (err) {
+      resultat.textContent = t("cle_ko", { statut: 0, detail: String(err) });
+    }
+  });
+
+  $("form-fournisseur").addEventListener("submit", async (evenement) => {
+    evenement.preventDefault();
+    const resultat = $("ff-resultat");
+    const nom = $("ff-nom").value.trim();
+    const url = $("ff-url").value.trim();
+    const cle = $("ff-cle").value.trim();
+    const modeles = $("ff-modeles").value.trim();
+    if (!nom || !url || !cle || !modeles) {
+      resultat.textContent = t("ff_requis");
+      return;
+    }
+    const bouton = $("btn-ajouter-fournisseur");
+    bouton.disabled = true;
+    try {
+      gestionCourante = await invoke("ajouter_fournisseur", { nom, url, cle, modeles });
+      ouvrirGestion(gestionCourante);
+      $("ff-nom").value = "";
+      $("ff-url").value = "";
+      $("ff-cle").value = "";
+      $("ff-modeles").value = "";
+      resultat.textContent = t("fournisseur_ajoute");
+      setTimeout(rafraichir, 400);
+    } catch (err) {
+      resultat.textContent = String(err);
+    } finally {
+      bouton.disabled = false;
+    }
+  });
+
+  // P5 : l'interface signale qu'elle est prete (journal ms).
+  requestAnimationFrame(() => {
+    Promise.resolve(invoke("interface_prete")).catch(() => { /* sans consequence */ });
+  });
 
   appliquerLangue();
   majDemarrageWindows();

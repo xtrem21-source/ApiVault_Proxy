@@ -5,7 +5,7 @@ du 18/10/2026, après le sprint 0 d'assainissement.
 
 ## Version
 
-- Version applicative : **0.4.1** (`Cargo.toml`, `tauri.conf.json`, en-tête `/health`).
+- Version applicative : **0.5.0** (`Cargo.toml`, `tauri.conf.json`, en-tête `/health`).
 - Binaire : `Proxy-Externe/src-tauri/target/release/apivault-proxy.exe`.
 - Crate : `apivault-proxy` (nom technique), produit : `ApiVault_Proxy`.
 - Édition Rust : 2021.
@@ -33,6 +33,13 @@ du 18/10/2026, après le sprint 0 d'assainissement.
   Le flux a ensuite son propre budget de 900 s, qui démarre après les bascules :
   le pire cas est donc 45 s + 900 s = 945 s, et non 900 s pour la requête
   complète.
+- Un fournisseur ajouté depuis l'interface est immédiatement disponible : ses
+  modèles sont ajoutés à l'alias `defaut` sans redémarrage.
+- Diagnostic : commande `diagnostic` (interface) qui renvoie un JSON complet
+  (version, port, fournisseurs, alias, 80 dernières lignes de journal). Aucune
+  valeur de clé, aucun entête d'authentification et aucune query string n'y
+  figure : les secrets connus sont remplacés par `***` et les URL sont coupées
+  avant `?` / `#`. Un test unitaire échoue si une clé apparaît.
 - Flux SSE borné : 120 s d'inactivité, 900 s au total, puis événement d'erreur
   au format OpenAI et fermeture.
 - Aucune redirection amont suivie (`Policy::none` sur les deux clients HTTP).
@@ -47,18 +54,45 @@ du 18/10/2026, après le sprint 0 d'assainissement.
 ### Interface (fenêtre unique, Tauri 2 / WebView2)
 
 - État du service, démarrage/arrêt, port, jeton, copie de la configuration client.
+- Adresse du proxy copiable par double-clic, avec confirmation « copié ».
+- Bouton « Copier le diagnostic » (JSON, sans clé).
+- Ajout d'un fournisseur (nom, adresse, clé, modèles) avec test de clé avant
+  enregistrement ; écriture atomique dans `cles.env`, sauvegarde `.bak`,
+  commentaires conservés, clé jamais journalisée.
 - Fournisseurs et clés : saisie, test, effacement avec double confirmation (2,5 s).
 - Alias et cibles : clic sur un modèle = modèle par défaut, étoile, persistance
-  dans `cles.env` (`PROXY_MODELE_PREFERE`).
+  dans `cles.env` (`PROXY_MODELE_PREFERE`). Double-clic = plus de défaut
+  (« aucun défaut »), repli sur le premier modèle joignable.
+- Au démarrage : aucun test réseau, l'état de la dernière session est repris
+  tel quel. Un candidat repris n'est jamais présenté comme joignable (badge
+  « repris », « dernier état connu »). Une passe de fond unique, 60 s après le
+  lancement, ne teste que les cibles jamais vues (4 en parallèle, 5 s chacune).
+  Un échec d'appel réel, ou le bouton « Vérifier », déclenche une vérification.
+- Modèle non joignable (panne, pause, épuisé) : badge « non joignable » et
+  infobulle avec la dernière erreur et son ancienneté ; la sélection reste
+  possible.
+- Journal du démarrage en ms : `config`, `pool`, `serveur`, `interface`, `total`.
 - Journal, pool (requalifier), démarrage avec Windows.
 - Bandeau fixe en haut, infobulles personnalisées, FR/EN.
-- Super IA : case désactivée, mention « bientôt ».
+- Super IA : case désactivée, mention « bientôt », dans le panneau de droite
+  sous les jetons d'accès (« Gestion supérieure »).
 
 ### Configuration
 
 - `cles.env` (UTF-8 BOM, CRLF) : `PROXY_PORT`, `PROXY_MASTER_KEY`,
-  `PROXY_MODELE_PREFERE`, `OPENROUTER_KEY`, `DEEPSEEK_KEY`, `NVIDIA_KEY`,
-  `*_URLS`.
+  `PROXY_MODELE_PREFERE`, `PROXY_FOURNISSEURS`, `OPENROUTER_KEY`, `DEEPSEEK_KEY`,
+  `NVIDIA_KEY`, `*_URLS`, `*_MODELES`.
+- Fournisseur ajouté depuis l'interface : format de stockage exact, tout en
+  majuscules pour les noms de variables.
+  - `PROXY_FOURNISSEURS` : liste des noms ajoutés, séparés par `;`.
+  - `<NOM>_URLS` : une ou plusieurs adresses, séparées par `,` ou `;`.
+  - `<NOM>_MODELES` : identifiants de modèles, séparés par `,` ou `;`.
+  - `<NOM>_KEY` : la clé, en clair (aucun chiffrement, voir plus bas).
+  - Le nom saisi est normalisé : minuscules, espaces/`-`/`.` remplacés par `_`,
+    2 à 32 caractères, commence par une lettre, `[a-z0-9_]` uniquement.
+  - Écriture atomique (`.env.tmp` puis renommage), sauvegarde `cles.env.bak`
+    prise une seule fois avant l'ajout, commentaires et autres variables
+    conservés.
 - `%APPDATA%\ApiVault_Proxy\` : `journal.log`, état du pool.
 - Surcharge du chemin de configuration par `APIVAULT_CLE_ENV` (utilisée par les
   tests d'intégration).
@@ -93,6 +127,6 @@ cargo build --release
 
 ## Compteurs au 18/10/2026
 
-- 20 tests unitaires (modules `config`, `pool`, `serveur`).
+- 22 tests unitaires (modules `config`, `pool`, `serveur`).
 - 7 tests d'intégration (`tests/integration.rs`) sur la passerelle réelle.
 - Exécutable release : voir la taille mesurée dans le rapport de sprint.
