@@ -1020,18 +1020,13 @@ impl Service {
                 }
                 Err(e) => {
                     srv.actif.store(false, Ordering::SeqCst);
-                    // Cause technique : journal uniquement (os error 10048, ...).
-                    srv.app.journaliser(&format!(
-                        "Impossible d'ecouter sur 127.0.0.1:{} : {}",
-                        srv.port, e
-                    ));
                     // Message affiche : explicite et actionnable, jamais la
                     // seule trace technique.
                     let (code, message) = if e.kind() == std::io::ErrorKind::AddrInUse {
                         (
                             "port_occupe",
                             format!(
-                                "Le port {} est deja utilise par une autre application. Ferme-la, puis relance.",
+                                "Le port {} est deja utilise par une autre application. Ferme-la, puis relance ApiVault Proxy.",
                                 srv.port
                             ),
                         )
@@ -1044,6 +1039,14 @@ impl Service {
                             ),
                         )
                     };
+                    // LOT 7 bis, point 6 : le journal porte la cause technique
+                    // et le message actionnable. Un utilisateur qui lit le
+                    // journal doit savoir quoi faire, pas seulement ce qui a
+                    // echoue.
+                    srv.app.journaliser(&format!(
+                        "Impossible d'ecouter sur 127.0.0.1:{} : {}. {}",
+                        srv.port, e, message
+                    ));
                     if let Ok(mut err) = srv.erreur.lock() {
                         *err = Some(message);
                     }

@@ -217,5 +217,20 @@ async fn a1_port_occupe_message_explicite_et_cause_dans_le_journal() {
         journal.contains("os error"),
         "la cause technique doit rester dans le journal : {journal}"
     );
+    // LOT 7 bis, point 6 : le journal doit aussi porter le message actionnable,
+    // pas seulement la cause technique (audit : « dans l'interface et dans le
+    // journal »). Un utilisateur qui lit le journal doit savoir quoi faire.
+    assert!(
+        journal.contains("deja utilise"),
+        "le journal doit dire que le port est deja utilise : {journal}"
+    );
+    assert!(
+        journal.contains(&port.to_string()),
+        "le journal doit nommer le port occupe : {journal}"
+    );
+    assert!(
+        journal.contains("relance"),
+        "le journal doit dire quoi faire (relancer) : {journal}"
+    );
     drop(ecoute);
 }
