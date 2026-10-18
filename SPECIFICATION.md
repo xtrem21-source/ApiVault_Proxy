@@ -151,6 +151,14 @@ et stable : on ajoute des champs, on n'en retire ni n'en renomme aucun (le LOT 6
 lit le même fichier). Aucune purge n'existe encore ; `cout_eur` reste `null`.
 L'agrégation est `metriques::totaliser_fichier`, exposée par `/admin/metriques`.
 
+**Implémenté en v0.5 (LOT 6)** — le plafond réalisé n'est pas le `plafond_jour_eur`
+ci-dessus (aucun prix n'existe encore) mais un **plafond mensuel en tokens** :
+`tokens_in + tokens_out` du mois, réglé par `PROXY_PLAFOND_MENSUEL` (0 =
+désactivé, chiffré avec les clés), vérifié avant tout appel amont, 429
+`plafond_atteint` sans appel fournisseur, alerte à 80 % (`niveau` dans
+`/admin/metriques`). Fail-open si le journal est illisible, sans réservation.
+Le plafond par alias et le coût en euros restent à faire.
+
 ---
 
 ## 5. Le pool : une machine à états (patron CloudProxy)

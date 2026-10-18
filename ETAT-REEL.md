@@ -90,6 +90,25 @@ Mesure et vue uniquement : aucun plafond, aucun blocage, aucune dépense réelle
 - Interface : commande Tauri `metriques` (même agrégation) et panneau
   « Consommation du mois » (requêtes, entrées, sorties, cache, détail).
 
+### Plafond mensuel (LOT 6)
+
+- Unite : `tokens_in + tokens_out` du mois en cours. Le cache est deja compte
+  dans l'entree comme le renvoie le fournisseur : c'est prudent, il est facture
+  moins cher.
+- Portee globale, mensuelle, sans plafond par alias. Reglage `PROXY_PLAFOND_MENSUEL`
+  dans le fichier de cles (donc chiffre), 0 = desactive, desactive par defaut.
+- Controle avance : avant tout appel amont, flux compris. Si `utilise >= plafond`,
+  reponse 429 `plafond_atteint` avec utilise / plafond / periode, et **aucun**
+  appel au fournisseur. La requete refusee n'ecrit pas de ligne de mesures.
+- Fail-open assume : un journal illisible ne bloque pas, le journal indique
+  « plafond non verifie ». `/health` et `/admin/*` ne sont jamais bloques.
+- Pas de reservation : des requetes deja en vol peuvent depasser le plafond.
+- Alerte a 80 % : `/admin/metriques` ajoute `plafond`, `utilise`, `pourcentage`
+  et `niveau` (`desactive` / `ok` / `alerte` / `atteint`). Carte « Plafond
+  mensuel » dans l'interface : champ, jauge, etat, texte de prudence.
+- Commande Tauri `sauver_plafond` : ecrit le reglage puis l'applique sans
+  redemarrer la passerelle.
+
 ### Interface (fenêtre unique, Tauri 2 / WebView2)
 
 - État du service, démarrage/arrêt, port, jeton, copie de la configuration client.
@@ -153,10 +172,17 @@ Mesure et vue uniquement : aucun plafond, aucun blocage, aucune dépense réelle
 - Lecture par `coffre::lire_texte`, écriture toujours chiffrée et atomique
   (`.tmp` puis renommage). `.bak` chiffré, supprimé à la rotation ou à
   l'effacement d'une clé.
+- Au démarrage, `config::charger_et_migrer` réécrit chiffré un `cles.env` encore
+  en clair, **uniquement** s'il vit dans `%APPDATA%\ApiVault_Proxy\`. Un fichier
+  externe (`APIVAULT_CLE_ENV`) n'est jamais touché et le journal indique
+  « fichier de cles externe : migration non appliquee ». Écriture atomique : en
+  cas d'échec, l'ancien fichier reste en place.
 - Au démarrage, `icacls` restreint le dossier des clés au compte courant, mais
   **uniquement** si `cles.env` est dans `%APPDATA%\ApiVault_Proxy\` ; un fichier
   de clés externe (`APIVAULT_CLE_ENV`) reçoit le journal
-  « droits non appliques : fichier de cles externe ».
+  « droits non appliques : fichier de cles externe ». Un second passage donne un
+  droit explicite aux fichiers déjà présents : sans lui, `/T` avec la règle
+  héritée `(OI)(CI)F` les rendait illisibles pour leur propre compte.
 - Limite honnête : DPAPI lie le chiffrement au compte Windows, pas à un mot de
   passe. Un autre compte ou une copie hors session ne déchiffre pas, mais un
   processus tournant sous le même compte lit les clés ; les blocs libérés d'un
@@ -166,7 +192,8 @@ Mesure et vue uniquement : aucun plafond, aucun blocage, aucune dépense réelle
 
 - Coffre à mot de passe maître (PBKDF2 + AES-256-GCM) : le chiffrement actuel
   est DPAPI utilisateur, sans déverrouillage manuel.
-- Quotas, coûts, plafonds par jeton (le LOT 5 ne fait que mesurer).
+- Quotas par alias, coûts en euros et prix par modèle (`cout_eur` reste `null`) ;
+  seul le plafond global mensuel existe.
 - Les sept onglets de la spécification : l'interface est une page unique.
 - Apprentissage / classes d'équivalence automatiques.
 - `/v1/messages` (API Anthropic) et `/v1/embeddings`.
@@ -191,6 +218,9 @@ cargo test --release --test lot4
 # Compteur de tokens (LOT 5)
 cargo test --release --test lot5
 
+# Migration et plafond mensuel (LOT 6)
+cargo test --release --test lot6
+
 # Compilation de production
 cargo build --release
 ```
@@ -207,5 +237,11 @@ cargo build --release
 - 12 tests du compteur (`tests/lot5.rs`) : format stable, agrégation par
   période, `usage` des quatre fournisseurs, `usage` de fin de flux SSE,
   `/admin/metriques` (401 sans jeton, 400 période invalide), échec amont estimé.
-- Total : 63, tous verts (`cargo test --release`).
+- 15 tests du LOT 6 (`tests/lot6.rs`) : migration au démarrage d'un fichier en
+  clair (interne, externe, échec d'écriture, après chargement), restriction qui
+  garde les fichiers lisibles, plafond désactivé / juste en dessous / atteint
+  sans appel amont / flux refusé et compté, alerte à 80 %, journal illisible
+  (fail-open), persistance du réglage, mois précédent ignoré, `/health` et
+  `/admin/pool` jamais bloqués.
+- Total : 78, tous verts (`cargo test --release`).
 - Exécutable release : voir la taille mesurée dans le rapport de sprint.
