@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::body::{Body, Bytes};
 use axum::extract::{Path as AxumPath, State as AxumState};
@@ -16,6 +16,7 @@ use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::Router;
+use futures_util::StreamExt;
 use serde_json::{json, Value};
 use tokio::sync::watch;
 
@@ -25,6 +26,11 @@ use crate::config::{
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Inactivite maximale toleree entre deux octets du flux amont.
+const FLUX_INACTIVITE: Duration = Duration::from_secs(120);
+/// Duree totale maximale d'un flux, en-tetes comprises.
+const FLUX_DUREE_MAX: Duration = Duration::from_secs(900);
 
 pub struct AppState {
     pub cfg: Config,
@@ -1027,7 +1033,10 @@ async fn chat(
                                 "alias={} -> {} flux (200)",
                                 alias.nom, etiquette
                             ));
-                            return reponse_flux(reponse, &alias, &etiquette);
+                            let journal_app = Arc::clone(&app);
+                            let journal: Option<Arc<dyn Fn(String) + Send + Sync>> =
+                                Some(Arc::new(move |m: String| journal_app.journaliser(&m)));
+                            return reponse_flux(reponse, &alias, &etiquette, journal);
                         }
 
                         let octets = match reponse.bytes().await {
@@ -1129,8 +1138,139 @@ async fn chat(
     )
 }
 
-fn reponse_flux(reponse: reqwest::Response, alias: &Alias, etiquette: &str) -> Response {
-    let mut sortie = Response::new(Body::from_stream(reponse.bytes_stream()));
+/// Bornes de securite appliquees a un flux SSE.
+#[derive(Clone, Copy)]
+struct BornesFlux {
+    inactivite: Duration,
+    duree_max: Duration,
+}
+
+impl Default for BornesFlux {
+    fn default() -> Self {
+        Self {
+            inactivite: FLUX_INACTIVITE,
+            duree_max: FLUX_DUREE_MAX,
+        }
+    }
+}
+
+/// Evenement SSE d'erreur au format OpenAI.
+fn sse_erreur(type_code: &str, message: &str) -> Bytes {
+    let charge = json!({
+        "error": {
+            "message": message,
+            "type": type_code,
+            "code": type_code
+        }
+    });
+    Bytes::from(format!("data: {}\n\n", charge))
+}
+
+/// Enveloppe le flux amont : coupe apres `inactivite` sans octet, et apres
+/// `duree_max` au total. A l'expiration, un evenement SSE d'erreur au format
+/// OpenAI est emis, puis le flux se ferme proprement (pas de tache orpheline).
+fn flux_borne(
+    reponse: reqwest::Response,
+    etiquette: String,
+    bornes: BornesFlux,
+    journal: Option<Arc<dyn Fn(String) + Send + Sync>>,
+) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> + Send {
+    let debut = Instant::now();
+    let amont = reponse.bytes_stream();
+    let etat = (amont, debut, false, etiquette, bornes, journal);
+
+    futures_util::stream::unfold(
+        etat,
+        move |(mut amont, debut, termine, etiquette, bornes, journal)| async move {
+            if termine {
+                return None;
+            }
+            let ecoule = debut.elapsed();
+            if ecoule >= bornes.duree_max {
+                if let Some(j) = &journal {
+                    j(format!(
+                        "flux {} : duree totale maximale depassee ({} s), fermeture",
+                        etiquette,
+                        bornes.duree_max.as_secs()
+                    ));
+                }
+                let evenement = sse_erreur(
+                    "upstream_timeout",
+                    "La duree totale maximale du flux est depassee.",
+                );
+                return Some((
+                    Ok(evenement),
+                    (amont, debut, true, etiquette, bornes, journal),
+                ));
+            }
+
+            let reste = bornes.duree_max - ecoule;
+            let (delai, cause) = if reste < bornes.inactivite {
+                (reste, "duree")
+            } else {
+                (bornes.inactivite, "inactivite")
+            };
+            match tokio::time::timeout(delai, amont.next()).await {
+                Ok(Some(Ok(octets))) => {
+                    Some((Ok(octets), (amont, debut, false, etiquette, bornes, journal)))
+                }
+                Ok(Some(Err(e))) => {
+                    if let Some(j) = &journal {
+                        j(format!("flux {} : erreur amont ({})", etiquette, e));
+                    }
+                    let evenement = sse_erreur(
+                        "upstream_broken",
+                        "Le flux amont s'est interrompu avant la fin.",
+                    );
+                    Some((
+                        Ok(evenement),
+                        (amont, debut, true, etiquette, bornes, journal),
+                    ))
+                }
+                Ok(None) => None,
+                Err(_) => {
+                    if let Some(j) = &journal {
+                        if cause == "duree" {
+                            j(format!(
+                                "flux {} : duree totale maximale depassee ({} s), fermeture",
+                                etiquette,
+                                bornes.duree_max.as_secs()
+                            ));
+                        } else {
+                            j(format!(
+                                "flux {} : inactivite de {} s depassee, fermeture",
+                                etiquette,
+                                bornes.inactivite.as_secs()
+                            ));
+                        }
+                    }
+                    let evenement = sse_erreur(
+                        "upstream_timeout",
+                        "Aucun octet recu du fournisseur dans le delai imparti.",
+                    );
+                    Some((
+                        Ok(evenement),
+                        (amont, debut, true, etiquette, bornes, journal),
+                    ))
+                }
+            }
+        },
+    )
+}
+
+fn reponse_flux(
+    reponse: reqwest::Response,
+    alias: &Alias,
+    etiquette: &str,
+    journal: Option<Arc<dyn Fn(String) + Send + Sync>>,
+) -> Response {
+    let flux = flux_borne(
+        reponse,
+        etiquette.to_string(),
+        BornesFlux::default(),
+        journal,
+    );
+    let mut sortie = Response::new(Body::from_stream(flux));
     let entetes = sortie.headers_mut();
     entetes.insert(
         header::CONTENT_TYPE,
@@ -1441,5 +1581,113 @@ mod tests {
         assert_eq!(reponse.status(), StatusCode::FOUND);
         let reponse = client_flux().get(&url).send().await.unwrap();
         assert_eq!(reponse.status(), StatusCode::FOUND);
+    }
+
+    async fn serveur_de_test(app: axum::Router) -> String {
+        let ecoute = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let adresse = ecoute.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(ecoute, app).await;
+        });
+        format!("http://{adresse}")
+    }
+
+    fn route_silencieuse(premier: bool) -> axum::Router {
+        use axum::routing::get;
+        axum::Router::new().route(
+            "/flux",
+            get(move || async move {
+                let amorce = futures_util::stream::once(async move {
+                    Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: {\"a\":1}\n\n"))
+                });
+                let corps = if premier {
+                    let flux = amorce.chain(futures_util::stream::pending());
+                    Body::from_stream(flux)
+                } else {
+                    Body::from_stream(futures_util::stream::pending::<
+                        Result<Bytes, std::io::Error>,
+                    >())
+                };
+                ([(header::CONTENT_TYPE, "text/event-stream")], corps)
+            }),
+        )
+    }
+
+    #[tokio::test]
+    async fn flux_silencieux_coupe_et_signale() {
+        let base = serveur_de_test(route_silencieuse(true)).await;
+        let reponse = client_flux()
+            .get(format!("{base}/flux"))
+            .send()
+            .await
+            .unwrap();
+        let bornes = BornesFlux {
+            inactivite: Duration::from_millis(80),
+            duree_max: Duration::from_secs(5),
+        };
+        let mut flux = Box::pin(flux_borne(reponse, "test".into(), bornes, None));
+
+        // Le premier morceau passe tel quel.
+        let premier = flux.next().await.unwrap().unwrap();
+        assert_eq!(&premier[..], b"data: {\"a\":1}\n\n");
+
+        // Puis l'inactivite coupe et un evenement d'erreur OpenAI est emis.
+        let second = flux.next().await.unwrap().unwrap();
+        let texte = String::from_utf8_lossy(&second);
+        assert!(texte.starts_with("data: {"), "recu : {texte}");
+        assert!(texte.contains("\"error\""), "recu : {texte}");
+        assert!(texte.contains("upstream_timeout"), "recu : {texte}");
+        assert!(flux.next().await.is_none(), "le flux doit se fermer");
+    }
+
+    #[tokio::test]
+    async fn flux_total_borne_par_la_duree() {
+        let base = serveur_de_test(route_silencieuse(false)).await;
+        let reponse = client_flux()
+            .get(format!("{base}/flux"))
+            .send()
+            .await
+            .unwrap();
+        let bornes = BornesFlux {
+            inactivite: Duration::from_secs(3600),
+            duree_max: Duration::from_millis(80),
+        };
+        let debut = Instant::now();
+        let mut flux = Box::pin(flux_borne(reponse, "test".into(), bornes, None));
+        let evenement = flux.next().await.unwrap().unwrap();
+        let texte = String::from_utf8_lossy(&evenement).to_string();
+        assert!(texte.contains("upstream_timeout"), "recu : {texte}");
+        assert!(flux.next().await.is_none());
+        assert!(
+            debut.elapsed() < Duration::from_secs(3),
+            "coupure trop tardive : {:?}",
+            debut.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn flux_normal_transmet_les_octets() {
+        use axum::routing::get;
+        let app = axum::Router::new().route(
+            "/ok",
+            get(|| async { ([(header::CONTENT_TYPE, "text/event-stream")], "data: ok\n\n") }),
+        );
+        let base = serveur_de_test(app).await;
+        let reponse = client_flux()
+            .get(format!("{base}/ok"))
+            .send()
+            .await
+            .unwrap();
+        let mut flux = Box::pin(flux_borne(
+            reponse,
+            "test".into(),
+            BornesFlux::default(),
+            None,
+        ));
+        let mut total = Vec::new();
+        while let Some(morceau) = flux.next().await {
+            total.extend_from_slice(&morceau.unwrap());
+        }
+        assert_eq!(String::from_utf8_lossy(&total), "data: ok\n\n");
     }
 }
