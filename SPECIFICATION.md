@@ -5,38 +5,18 @@ Statut : à valider avant la première ligne de code.
 
 ---
 
-## 1. Deux produits, un seul contrat
+## 1. Un produit, une passerelle
 
-### Version A — greffe dans le client existant (temporaire, non négociable)
-
-Une **entrée fournisseur supplémentaire** dans le client IA déjà installé, qui
-pointe vers une passerelle locale statique (LiteLLM). Ce client possède déjà les
-clés et les fournisseurs ; la passerelle est une **couche de redirection** posée
-devant.
-
-- 4 fournisseurs, 3 alias, bascule linéaire.
-- Aucun pool, aucune classe, aucun apprentissage, aucun quota.
-- Objectif : que ça marche, que ce soit prévisible, qu'on n'y touche plus.
-- Durée de vie : jusqu'à ce que la version B soit mûre, puis on change une URL.
-
-### Version B — ApiVault_Proxy (le produit)
-
-Application autonome, coffre + passerelle intelligente.
+ApiVault_Proxy est une application autonome : coffre de clés + passerelle locale
+compatible OpenAI. Le proxy est natif, il ne s'appuie sur aucune passerelle
+externe.
 
 - Pool de modèles/clés, classes d'équivalence, rotation de clés, quotas.
 - Interface complète, journal, coûts.
 - Objectif : volume gratuit, bascule équivalente, maîtrise des dépenses.
 
-### Le contrat entre les deux
-
-B expose la **même API OpenAI** que A. Le jour venu :
-
-```
-base_url : http://127.0.0.1:4000/v1   →   http://127.0.0.1:3100/v1
-clé      : sk-litellm-…                →   sk-apivault-…
-```
-
-Aucune réécriture, aucun couplage. **Aucune intelligence dans A** : elle serait
+Le client IA n'expose qu'un réglage : `base_url = http://127.0.0.1:3100/v1` et le
+jeton fourni par la passerelle. Aucune intelligence dans le client : elle serait
 à déboguer deux fois.
 
 ---
@@ -291,6 +271,9 @@ Corps maximal : 8 Mo (chat), 32 Mo (audio).
 - Journal sans contenu, sans en-tête d'authentification.
 - Jetons clients stockés sous forme d'empreinte, affichés une seule fois.
 - Corps limité, en-têtes refusés au-delà de 16 Ko.
+- Déverrouillage automatique par DPAPI assumé comme compromis. Protection visée :
+  accès hors ligne. Hors périmètre : code malveillant exécuté sous le compte de
+  l'utilisateur.
 
 ---
 
@@ -382,18 +365,3 @@ génération d'images, `/v1/messages` (reporté en v1.2), facturation.
 | Deux instances | plugin single-instance |
 | Port occupé | échec explicite, bouton « choisir un autre port » |
 
----
-
-## 15. Version A — configuration du client
-
-```
-base_url : http://127.0.0.1:4000/v1
-clé      : sk-litellm-<généré>
-modèles  : gratuit | rapide | defaut
-```
-
-- YAML statique, 4 fournisseurs, `fallbacks` linéaires, aucun pool.
-- Démarrage à l'ouverture de session (tâche planifiée, fenêtre masquée).
-- Clés dans `%APPDATA%\ApiVault_Proxy\cles.env`, ACL restreinte à l'utilisateur
-  courant — compromis assumé d'une version temporaire.
-- Les 4 fournisseurs du client restent en place : la passerelle est une 5e entrée.
