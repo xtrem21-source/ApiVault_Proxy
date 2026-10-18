@@ -149,6 +149,32 @@ fn migration_apres_chargement_de_la_configuration() {
     assert!(!brut.contains("sk-FICTIF"));
 }
 
+/// Defaut trouve pendant la preuve du LOT 6 : `icacls /T` avec la regle
+/// heritee retirait tout droit aux fichiers deja presents, qui devenaient
+/// illisibles pour leur propre compte au demarrage suivant.
+#[test]
+fn restriction_des_droits_garde_les_fichiers_lisibles() {
+    let base = temp_dir();
+    let donnees = base.join("ApiVault_Proxy");
+    let cles = ecrire_cles_en_clair(&donnees);
+    assert_eq!(
+        config::migrer_au_demarrage(&cles, &donnees),
+        config::Migration::Chiffre
+    );
+    let avant = std::fs::read_to_string(&cles).unwrap();
+
+    coffre::restreindre_droits(&donnees).unwrap();
+
+    let apres = std::fs::read_to_string(&cles)
+        .expect("le fichier de cles doit rester lisible apres la restriction");
+    assert_eq!(apres, avant);
+    assert!(apres.starts_with(coffre::EN_TETE));
+    // Le contenu reste dechiffrable par l'application.
+    assert!(coffre::lire_texte(&cles)
+        .unwrap()
+        .contains("sk-FICTIF-MAITRE-42"));
+}
+
 // ---------------------------------------------------------------------------
 // Partie B — plafond mensuel
 // ---------------------------------------------------------------------------

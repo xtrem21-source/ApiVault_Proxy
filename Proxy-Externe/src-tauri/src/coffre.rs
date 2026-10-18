@@ -148,6 +148,11 @@ pub fn copier_chiffre(source: &Path, destination: &Path) -> io::Result<()> {
 ///
 /// Echec non bloquant pour l'appelant : la fonction rend un message lisible
 /// que le demarrage journalise.
+///
+/// Les fichiers deja presents recoivent un droit explicite dans un second
+/// passage : avec `/T`, la regle heritee `(OI)(CI)F` ne s'applique pas aux
+/// fichiers, qui perdaient alors tout droit et devenaient illisibles pour leur
+/// propre compte (defaut constate au LOT 6).
 pub fn restreindre_droits(dossier: &Path) -> Result<String, String> {
     if !dossier.exists() {
         return Err(format!("dossier absent : {}", dossier.display()));
@@ -162,16 +167,23 @@ pub fn restreindre_droits(dossier: &Path) -> Result<String, String> {
         format!("{}\\{}", domaine, utilisateur)
     };
     let regle = format!("{}:(OI)(CI)F", compte);
+    let droit_fichiers = format!("{}:F", compte);
 
+    lancer_icacls(
+        dossier,
+        &["/inheritance:r", "/grant:r", &regle, "/T", "/C", "/Q"],
+    )?;
+    lancer_icacls(dossier, &["/grant", &droit_fichiers, "/T", "/C", "/Q"])?;
+
+    Ok(compte)
+}
+
+fn lancer_icacls(dossier: &Path, arguments: &[&str]) -> Result<(), String> {
     let mut commande = std::process::Command::new("icacls");
-    commande
-        .arg(dossier)
-        .arg("/inheritance:r")
-        .arg("/grant:r")
-        .arg(&regle)
-        .arg("/T")
-        .arg("/C")
-        .arg("/Q");
+    commande.arg(dossier);
+    for argument in arguments {
+        commande.arg(argument);
+    }
     // Pas de fenetre noire au demarrage.
     #[cfg(windows)]
     {
@@ -195,8 +207,7 @@ pub fn restreindre_droits(dossier: &Path) -> Result<String, String> {
             detail
         ));
     }
-
-    Ok(compte)
+    Ok(())
 }
 
 #[cfg(windows)]
