@@ -24,6 +24,7 @@ du 18/10/2026, après le sprint 0 d'assainissement.
 | `/admin/pool` | GET | Vue du pool (états, erreurs, pauses) |
 | `/admin/requalifier` | POST | Remet les cibles en test |
 | `/admin/rafraichir` | POST | Recharge les clés et les adresses |
+| `/admin/metriques?periode=AAAA-MM` | GET | Totaux entrée/sortie/cache d'une période (jeton maître) |
 
 - Authentification `Authorization: Bearer …` ou `X-API-Key`, comparaison à temps constant.
 - **Fail-closed** : sans jeton configuré, toute requête reçoit 401.
@@ -61,6 +62,33 @@ du 18/10/2026, après le sprint 0 d'assainissement.
   d'attente.
 - `X-Request-Id` (8 caractères hexadécimaux) sur chaque réponse et dans chaque
   ligne de journal rattachée à une requête.
+
+### Compteur de tokens (LOT 5)
+
+Mesure et vue uniquement : aucun plafond, aucun blocage, aucune dépense réelle.
+
+- Fichier `%APPDATA%\ApiVault_Proxy\metriques-AAAA-MM.jsonl` : une ligne JSON par
+  requête servie, ajout en fin de fichier, un fichier par mois.
+- **Format public et stable** : LOT 6 lit le même fichier sans migration. On
+  ajoute des champs, on n'en retire ni n'en renomme aucun.
+- Champs, dans l'ordre d'écriture : `id`, `horodatage`, `jeton`, `alias`,
+  `fournisseur`, `modele`, `statut`, `latence_ms`, `tokens_in`, `tokens_out`,
+  `tokens_cache`, `cout_eur`, `estime`, `tentative`, `flux`.
+- `tokens_cache` = `prompt_cache_hit_tokens` (DeepSeek) ou
+  `cache_read_input_tokens` (Anthropic), 0 quand le fournisseur n'en parle pas.
+  `cout_eur` reste `null` : aucun catalogue de prix n'existe encore.
+- `estime` = `true` quand le fournisseur n'a pas rendu d'`usage` (échec amont) :
+  les compteurs sont alors à 0 et la ligne est comptée à part.
+- Flux SSE : l'`usage` final est récupéré dans les événements du flux (tampon
+  glissant de 64 KiB) et la ligne n'est écrite qu'à la fermeture du flux.
+- Agrégation : `metriques::totaliser_fichier(chemin, periode)` est une fonction
+  pure (aucune interface, aucun réseau) qui rend entrées, sorties, cache,
+  requêtes, estimées et lignes illisibles, plus le détail par alias et par
+  modèle. Réutilisable telle quelle par le LOT 6.
+- `/admin/metriques?periode=AAAA-MM` (jeton maître requis) rend ces totaux ;
+  période absente = mois courant, période mal formée = 400 `periode_invalide`.
+- Interface : commande Tauri `metriques` (même agrégation) et panneau
+  « Consommation du mois » (requêtes, entrées, sorties, cache, détail).
 
 ### Interface (fenêtre unique, Tauri 2 / WebView2)
 
@@ -104,25 +132,41 @@ du 18/10/2026, après le sprint 0 d'assainissement.
   - `PROXY_FOURNISSEURS` : liste des noms ajoutés, séparés par `;`.
   - `<NOM>_URLS` : une ou plusieurs adresses, séparées par `,` ou `;`.
   - `<NOM>_MODELES` : identifiants de modèles, séparés par `,` ou `;`.
-  - `<NOM>_KEY` : la clé, en clair (aucun chiffrement, voir plus bas).
+  - `<NOM>_KEY` : la clé, chiffrée sur disque (voir « Coffre » ci-dessous).
   - Le nom saisi est normalisé : minuscules, espaces/`-`/`.` remplacés par `_`,
     2 à 32 caractères, commence par une lettre, `[a-z0-9_]` uniquement.
-  - Écriture atomique (`.env.tmp` puis renommage), sauvegarde `cles.env.bak`
+  - Écriture atomique (`.tmp` puis renommage), sauvegarde `cles.env.bak`
     prise une seule fois avant l'ajout, commentaires et autres variables
-    conservés.
-- `%APPDATA%\ApiVault_Proxy\` : `journal.log`, état du pool.
+    conservés ; la sauvegarde est chiffrée elle aussi.
+- `%APPDATA%\ApiVault_Proxy\` : `journal.log`, état du pool,
+  `metriques-AAAA-MM.jsonl` (une ligne par requête servie).
 - Surcharge du chemin de configuration par `APIVAULT_CLE_ENV` (utilisée par les
   tests d'intégration).
 - Icônes : `outils/generer-icones.ps1` est obsolète, protégé par `-AncienLogo` ;
   le logo officiel vient de `src-tauri/icons/icon.svg`.
 
+### Coffre (LOT 4)
+
+- `cles.env` est chiffré avec DPAPI, portée **utilisateur** : le fichier
+  commence par la ligne `APIVAULT-COFFRE-1` suivie d'un blob base64. Un fichier
+  sans cet en-tête est lu comme du clair (migration) puis réécrit chiffré.
+- Lecture par `coffre::lire_texte`, écriture toujours chiffrée et atomique
+  (`.tmp` puis renommage). `.bak` chiffré, supprimé à la rotation ou à
+  l'effacement d'une clé.
+- Au démarrage, `icacls` restreint le dossier des clés au compte courant, mais
+  **uniquement** si `cles.env` est dans `%APPDATA%\ApiVault_Proxy\` ; un fichier
+  de clés externe (`APIVAULT_CLE_ENV`) reçoit le journal
+  « droits non appliques : fichier de cles externe ».
+- Limite honnête : DPAPI lie le chiffrement au compte Windows, pas à un mot de
+  passe. Un autre compte ou une copie hors session ne déchiffre pas, mais un
+  processus tournant sous le même compte lit les clés ; les blocs libérés d'un
+  SSD (TRIM, clichés instantanés) peuvent conserver d'anciennes versions.
+
 ## Ce qui n'est PAS implémenté
 
-- Coffre chiffré (PBKDF2 + AES-256-GCM) : les clés restent en clair dans
-  `cles.env`, protégées par les ACL du compte Windows.
-- DPAPI : aucun déverrouillage automatique n'est câblé (voir le compromis décrit
-  dans `SPECIFICATION.md`, section 9).
-- Quotas, coûts, plafonds par jeton.
+- Coffre à mot de passe maître (PBKDF2 + AES-256-GCM) : le chiffrement actuel
+  est DPAPI utilisateur, sans déverrouillage manuel.
+- Quotas, coûts, plafonds par jeton (le LOT 5 ne fait que mesurer).
 - Les sept onglets de la spécification : l'interface est une page unique.
 - Apprentissage / classes d'équivalence automatiques.
 - `/v1/messages` (API Anthropic) et `/v1/embeddings`.
@@ -141,14 +185,27 @@ cargo test --release --test integration
 # Tests de sécurité (Host, /health, port occupé)
 cargo test --release --test lot3
 
+# Coffre et clés sur disque (LOT 4)
+cargo test --release --test lot4
+
+# Compteur de tokens (LOT 5)
+cargo test --release --test lot5
+
 # Compilation de production
 cargo build --release
 ```
 
 ## Compteurs au 18/10/2026
 
-- 27 tests unitaires (modules `config`, `pool`, `serveur`).
+- 29 tests unitaires (modules `config`, `coffre`, `metriques`, `pool`, `serveur`).
 - 7 tests d'intégration (`tests/integration.rs`) sur la passerelle réelle.
 - 3 tests de sécurité et de disponibilité (`tests/lot3.rs`) : `/health` minimal,
   `Host` refusé, port occupé.
+- 12 tests du coffre (`tests/lot4.rs`) : aller-retour, migration du clair, aucun
+  secret en clair sur disque, `.bak` chiffré puis supprimé, en-tête corrompu,
+  restriction des droits, fichier de clés externe jamais restreint.
+- 12 tests du compteur (`tests/lot5.rs`) : format stable, agrégation par
+  période, `usage` des quatre fournisseurs, `usage` de fin de flux SSE,
+  `/admin/metriques` (401 sans jeton, 400 période invalide), échec amont estimé.
+- Total : 63, tous verts (`cargo test --release`).
 - Exécutable release : voir la taille mesurée dans le rapport de sprint.

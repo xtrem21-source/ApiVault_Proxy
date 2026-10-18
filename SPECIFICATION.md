@@ -142,6 +142,15 @@ requetes(id, horodatage, jeton, alias, fournisseur, modele, statut,
 
 Purge automatique à `journal_jours`. **Jamais le contenu des messages.**
 
+**Implémenté en v0.5 (LOT 5)** — le SQLite ci-dessus reste la cible, mais le
+fichier réel est `metriques-AAAA-MM.jsonl` : une ligne JSON par requête servie,
+append-only, un fichier par mois. Champs : `id`, `horodatage`, `jeton`, `alias`,
+`fournisseur`, `modele`, `statut`, `latence_ms`, `tokens_in`, `tokens_out`,
+`tokens_cache`, `cout_eur`, `estime`, `tentative`, `flux`. Ce format est public
+et stable : on ajoute des champs, on n'en retire ni n'en renomme aucun (le LOT 6
+lit le même fichier). Aucune purge n'existe encore ; `cout_eur` reste `null`.
+L'agrégation est `metriques::totaliser_fichier`, exposée par `/admin/metriques`.
+
 ---
 
 ## 5. Le pool : une machine à états (patron CloudProxy)
