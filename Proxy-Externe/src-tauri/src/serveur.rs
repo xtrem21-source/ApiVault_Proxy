@@ -37,13 +37,32 @@ const FLUX_INACTIVITE: Duration = Duration::from_secs(120);
 /// Duree totale maximale d'un flux, en-tetes comprises.
 const FLUX_DUREE_MAX: Duration = Duration::from_secs(900);
 /// Fenetre totale accordee aux tentatives et aux bascules (en-tetes comprises).
-const BUDGET_BASCULES: Duration = Duration::from_secs(45);
+/// LOT 7, M-3 : c'est un budget global, plus une coupure seche a 45 s.
+const BUDGET_BASCULES: Duration = Duration::from_secs(900);
 /// Duree maximale d'une requete complete, flux compris.
 const BUDGET_REQUETE: Duration = Duration::from_secs(900);
 /// Plafond absolu d'une tentative isolee, meme si le budget de bascule le permet.
-const DELAI_CIBLE: Duration = Duration::from_secs(300);
+/// LOT 7, M-3 : 120 s (premier octet compris), pour laisser sa chance a chaque
+/// cible avant de basculer sur la suivante.
+const DELAI_CIBLE: Duration = Duration::from_secs(120);
 /// Au plus 3 cibles essayees : 1 tentative + 2 bascules.
 const CIBLES_MAX: usize = 3;
+
+/// Delai surchargeable, en millisecondes. Les tests ne peuvent pas attendre
+/// 120 s : ils posent `APIVAULT_DELAI_CIBLE_MS` / `APIVAULT_BUDGET_BASCULE_MS`.
+/// Sans variable (cas normal), la valeur de production s'applique.
+fn duree_reglable(nom: &str, defaut: Duration) -> Duration {
+    let Ok(valeur) = std::env::var(nom) else {
+        return defaut;
+    };
+    valeur
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .filter(|ms| *ms > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(defaut)
+}
 
 /// Horloge du processus, posee au premier appel (debut de `main`).
 static DEBUT_PROCESSUS: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
@@ -1839,14 +1858,17 @@ async fn chat_interne(
         );
     }
 
-    // Budget : au plus 3 cibles (1 tentative + 2 bascules) et 45 s de bascule.
-    for (rang, cible) in ordre.iter().take(CIBLES_MAX).enumerate() {
-        let restant_bascule = BUDGET_BASCULES.saturating_sub(debut_requete.elapsed());
+    // Budget : au plus 3 cibles (1 tentative + 2 bascules) dans une enveloppe
+    // globale de 900 s, chaque tentative etant plafonnee a 120 s.
+    let budget_bascules = duree_reglable("APIVAULT_BUDGET_BASCULE_MS", BUDGET_BASCULES);
+    let delai_cible = duree_reglable("APIVAULT_DELAI_CIBLE_MS", DELAI_CIBLE);
+    'cibles: for (rang, cible) in ordre.iter().take(CIBLES_MAX).enumerate() {
+        let restant_bascule = budget_bascules.saturating_sub(debut_requete.elapsed());
         if restant_bascule.is_zero() {
             app.journaliser_req(id, &format!(
                 "alias={} : budget de {} s epuise, arret des bascules",
                 alias.nom,
-                BUDGET_BASCULES.as_secs()
+                budget_bascules.as_secs()
             ));
             derniere = Some((
                 StatusCode::GATEWAY_TIMEOUT,
@@ -1888,13 +1910,13 @@ async fn chat_interne(
 
         loop {
             let client = if flux { &app.http_flux } else { &app.http };
-            // Chaque tentative est plafonnee : min(budget de bascule restant, 300 s).
-            let restant_bascule = BUDGET_BASCULES.saturating_sub(debut_requete.elapsed());
+            // Chaque tentative est plafonnee : min(budget global restant, 120 s).
+            let restant_bascule = budget_bascules.saturating_sub(debut_requete.elapsed());
             if restant_bascule.is_zero() {
                 app.journaliser_req(id, &format!(
                     "alias={} : budget de {} s epuise avant {}/{}",
                     alias.nom,
-                    BUDGET_BASCULES.as_secs(),
+                    budget_bascules.as_secs(),
                     cible.fournisseur,
                     cible.modele
                 ));
@@ -1902,9 +1924,9 @@ async fn chat_interne(
                     StatusCode::GATEWAY_TIMEOUT,
                     "Budget de bascule epuise.".to_string(),
                 ));
-                break;
+                break 'cibles;
             }
-            let delai_tentative = restant_bascule.min(DELAI_CIBLE);
+            let delai_tentative = restant_bascule.min(delai_cible);
             match tokio::time::timeout(
                 delai_tentative,
                 poster(&app, client, &cible.fournisseur, &cle, &corps_up, None),
@@ -1926,6 +1948,25 @@ async fn chat_interne(
                             "Delai depasse vers {}/{}.",
                             cible.fournisseur, cible.modele
                         ),
+                    ));
+                    // LOT 7, M-3 : un depassement n'est plus une coupure seche.
+                    // S'il reste du budget global, on bascule sur la cible
+                    // suivante ; sinon seulement, la requete rend 504.
+                    let restant = budget_bascules.saturating_sub(debut_requete.elapsed());
+                    if restant.is_zero() {
+                        app.journaliser_req(id, &format!(
+                            "alias={} : budget de {} s epuise, plus de bascule apres {}/{}",
+                            alias.nom,
+                            budget_bascules.as_secs(),
+                            cible.fournisseur,
+                            cible.modele
+                        ));
+                        break 'cibles;
+                    }
+                    app.journaliser_req(id, &format!(
+                        "alias={} : bascule vers la cible suivante ({} s de budget restant)",
+                        alias.nom,
+                        restant.as_secs()
                     ));
                     break;
                 }

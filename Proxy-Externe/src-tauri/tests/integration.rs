@@ -459,29 +459,104 @@ async fn g_corps_trop_gros_donne_413() {
 }
 
 // ---------------------------------------------------------------------------
-// f) budget : amont lent -> duree totale <= 45 s + marge
+// f) budget de bascule : un amont lent ne coupe plus, il bascule
 // ---------------------------------------------------------------------------
 
+/// Les tests ne peuvent pas attendre 120 s. Les deux delais de production sont
+/// surchargeables par environnement, ce qui permet d'observer la politique de
+/// bascule sans attendre.
+fn regler_delais(delai_ms: u64, budget_ms: u64) {
+    std::env::set_var("APIVAULT_DELAI_CIBLE_MS", delai_ms.to_string());
+    std::env::set_var("APIVAULT_BUDGET_BASCULE_MS", budget_ms.to_string());
+}
+
+fn oublier_delais() {
+    std::env::remove_var("APIVAULT_DELAI_CIBLE_MS");
+    std::env::remove_var("APIVAULT_BUDGET_BASCULE_MS");
+}
+
 #[tokio::test]
-async fn f_amont_lent_est_coupe_par_le_budget() {
+async fn f_amont_lent_bascule_vers_la_cible_saine() {
     let _verrou = VERROU.lock().await;
     let lent = demarrer_factice(Comportement::Lent).await;
-    let banc = demarrer("budget", JETON, &lent.base, &lent.base).await;
+    let sain = demarrer_factice(Comportement::Succes).await;
+    regler_delais(400, 8_000);
+    let banc = demarrer("budget", JETON, &lent.base, &sain.base).await;
 
     let debut = Instant::now();
     let reponse = client()
         .post(banc.url("/v1/chat/completions"))
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::AUTHORIZATION, format!("Bearer {}", JETON))
-        .body(corps_chat("rapide", false))
+        .body(corps_chat("defaut", false))
         .send()
         .await
         .unwrap();
     let duree = debut.elapsed();
+    let cible = reponse
+        .headers()
+        .get("x-apivault-cible")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let etat = reponse.status();
+    let corps = reponse.text().await.unwrap();
+    oublier_delais();
 
-    assert_eq!(reponse.status(), StatusCode::GATEWAY_TIMEOUT);
+    assert_eq!(
+        etat,
+        StatusCode::OK,
+        "un delai depasse doit basculer, pas couper. corps : {corps}"
+    );
+    assert_eq!(
+        lent.appels.load(Ordering::SeqCst),
+        1,
+        "la cible lente est bien tentee une fois"
+    );
+    assert_eq!(
+        sain.appels.load(Ordering::SeqCst),
+        1,
+        "la cible saine doit servir la requete apres la bascule"
+    );
     assert!(
-        duree <= Duration::from_secs(50),
-        "budget de 45 s depasse : {duree:?}"
+        cible.starts_with("openrouter/"),
+        "la bascule doit viser le fournisseur sain, recu : {cible}"
+    );
+    assert!(
+        duree <= Duration::from_secs(8),
+        "le budget de bascule doit rester une borne : {duree:?}"
+    );
+}
+
+#[tokio::test]
+async fn f_amont_lent_partout_donne_504_dans_le_budget() {
+    let _verrou = VERROU.lock().await;
+    let premier = demarrer_factice(Comportement::Lent).await;
+    let second = demarrer_factice(Comportement::Lent).await;
+    regler_delais(300, 1_000);
+    let banc = demarrer("budget504", JETON, &premier.base, &second.base).await;
+
+    let debut = Instant::now();
+    let reponse = client()
+        .post(banc.url("/v1/chat/completions"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {}", JETON))
+        .body(corps_chat("defaut", false))
+        .send()
+        .await
+        .unwrap();
+    let duree = debut.elapsed();
+    let etat = reponse.status();
+    let corps = reponse.text().await.unwrap();
+    oublier_delais();
+
+    assert_eq!(etat, StatusCode::GATEWAY_TIMEOUT, "corps : {corps}");
+    assert!(
+        duree <= Duration::from_secs(5),
+        "le budget global doit rester une borne : {duree:?}"
+    );
+    assert!(
+        premier.appels.load(Ordering::SeqCst) >= 1,
+        "au moins une cible doit avoir ete tentee"
     );
 }

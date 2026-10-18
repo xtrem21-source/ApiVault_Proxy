@@ -254,7 +254,10 @@ bascule. On termine par un événement d'erreur propre.
 | 200 puis 1er événement = erreur | comme 5xx | modèle suivant |
 
 Disjoncteur : 3 échecs consécutifs sur un fournisseur → écarté 60 s.
-Budget : 2 alternatives maximum, 45 s au total.
+Budget : 2 alternatives maximum (3 cibles essayées), **900 s au total**,
+**120 s par tentative** premier octet compris. Un dépassement de tentative
+n'arrête pas la requête : si le budget global le permet, on bascule sur la
+cible suivante ; c'est seulement budget épuisé que la passerelle rend 504.
 
 ---
 

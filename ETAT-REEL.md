@@ -41,9 +41,14 @@ du 18/10/2026, après le sprint 0 d'assainissement.
   reste dans `journal.log`.
 - Alias : `gratuit`, `gratuit-secours`, `defaut`, `rapide`.
 - Bascule ordonnée selon l'alias, au plus 3 cibles (1 tentative + 2 bascules).
-- Budget : 45 s pour les tentatives/bascules, 300 s maximum par tentative.
+- Budget : **900 s au total**, **120 s maximum par tentative** (premier octet
+  compris), 3 cibles au plus. Un dépassement de tentative ne coupe plus la
+  requête : si le budget global le permet, on bascule sur la cible suivante ;
+  504 seulement quand le budget est épuisé (LOT 7, M-3). Ces deux délais sont
+  surchargeables par `APIVAULT_DELAI_CIBLE_MS` / `APIVAULT_BUDGET_BASCULE_MS`,
+  uniquement pour les tests (sans variable, les valeurs ci-dessus s'appliquent).
   Le flux a ensuite son propre budget de 900 s, qui démarre après les bascules :
-  le pire cas est donc 45 s + 900 s = 945 s, et non 900 s pour la requête
+  le pire cas est donc 900 s + 900 s = 1800 s, et non 900 s pour la requête
   complète.
 - Un fournisseur ajouté depuis l'interface est immédiatement disponible : ses
   modèles sont ajoutés à l'alias `defaut` sans redémarrage.
@@ -211,7 +216,8 @@ Mesure et vue uniquement : aucun plafond, aucun blocage, aucune dépense réelle
 ## Commandes
 
 ```powershell
-# Tests (unitaires + intégration, ~50 s à cause du test de budget 45 s)
+# Tests (unitaires + intégration, ~5 s : les délais de bascule sont réduits
+# par APIVAULT_DELAI_CIBLE_MS / APIVAULT_BUDGET_BASCULE_MS)
 cd Proxy-Externe\src-tauri
 cargo test --release
 
