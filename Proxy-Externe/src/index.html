@@ -199,6 +199,9 @@
   .jauge-remplie[data-niveau="alerte"] { background: #f59e0b; }
   .jauge-remplie[data-niveau="atteint"] { background: #ef4444; }
   .jauge-remplie[data-niveau="desactive"] { background: #64748b; }
+  .bandeau { display: none; padding: 8px 10px; border-radius: 8px; font-size: 12px; margin-bottom: 10px; border: 1px solid transparent; }
+  .bandeau.alerte { display: block; color: #ffe0b0; background: rgba(245,158,11,.14); border-color: rgba(245,158,11,.35); }
+  .bandeau.atteint { display: block; color: #ffc3c3; background: rgba(239,68,68,.14); border-color: rgba(239,68,68,.35); }
   .badge.plafond_ok { color: #b9f5cf; background: rgba(34,197,94,.14); border-color: rgba(34,197,94,.35); }
   .badge.plafond_alerte { color: #ffe0b0; background: rgba(245,158,11,.14); border-color: rgba(245,158,11,.35); }
   .badge.plafond_atteint { color: #ffc3c3; background: rgba(239,68,68,.14); border-color: rgba(239,68,68,.35); }
@@ -429,6 +432,7 @@
       <h2 data-i18n="plafond_titre">Plafond mensuel</h2>
       <span class="badge plafond_desactive" id="plafond-etat">—</span>
     </div>
+    <div class="bandeau" id="plafond-bandeau"></div>
     <div class="ligne">
       <span class="cle" data-i18n="plafond_reglage">Plafond en tokens (0 = désactivé)</span>
       <span class="valeur">
@@ -709,6 +713,8 @@
       plafond_prudence: "Le cache compte pour 1 token alors qu'il est facturé moins cher : le plafond est donc prudent. Aucune réservation n'est faite, des requêtes déjà en vol peuvent le dépasser.",
       plafond_invalide: "Valeur invalide : un entier positif, ou 0 pour désactiver.",
       plafond_erreur: "Plafond non enregistré : {message}",
+      plafond_bandeau_alerte: "Plafond mensuel : {p} % utilisés. Les requêtes passent encore, mais le plafond approche.",
+      plafond_bandeau_atteint: "Plafond mensuel atteint ({p} %) : les nouvelles requêtes sont refusées avec un code 429.",
       tip_plafond: "Contrôlé avant chaque appel au fournisseur, sur les totaux du mois en cours. Un journal illisible ne bloque jamais.",
       tip_plafond_enregistrer: "Écrit le réglage dans le fichier de clés, donc chiffré au repos.",
     },
@@ -911,6 +917,8 @@
       plafond_prudence: "Cache reads count as 1 token although they are billed less: the cap is therefore cautious. Nothing is reserved, so requests already in flight can exceed it.",
       plafond_invalide: "Invalid value: a positive integer, or 0 to disable.",
       plafond_erreur: "Cap not saved: {message}",
+      plafond_bandeau_alerte: "Monthly cap: {p}% used. Requests still go through, but the cap is close.",
+      plafond_bandeau_atteint: "Monthly cap reached ({p}%): new requests are refused with a 429 code.",
       tip_plafond: "Checked before every provider call, on the current month's totals. An unreadable log never blocks.",
       tip_plafond_enregistrer: "Writes the setting to the key file, so it is encrypted at rest.",
     },
@@ -1983,6 +1991,14 @@ function annulerConfirmationEffacement() {
     const jauge = $("plafond-jauge");
     jauge.dataset.niveau = niveau;
     jauge.style.width = plafond === 0 ? "0%" : Math.min(100, pourcentage) + "%";
+    const bandeau = $("plafond-bandeau");
+    bandeau.className = "bandeau";
+    if (niveau === "alerte" || niveau === "atteint") {
+      bandeau.classList.add(niveau);
+      bandeau.textContent = t("plafond_bandeau_" + niveau, { p: pourcentage });
+    } else {
+      bandeau.textContent = "";
+    }
     $("plafond-utilise").textContent =
       plafond === 0
         ? t("plafond_utilise_desactive", { n: utilise })
