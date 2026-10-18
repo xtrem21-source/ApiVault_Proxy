@@ -530,12 +530,16 @@
       ff_requis: "Nom, adresse, clé et au moins un modèle sont nécessaires.",
       test_en_cours: "Test de la clé…",
       cle_ok: "Clé acceptée — {n} modèle(s) listé(s) en {ms} ms.",
-      cle_ko: "Clé refusée ou injoignable (HTTP {statut}). {detail}",
-      cle_ko_sans_detail: "Clé refusée ou injoignable (HTTP {statut}).",
-      port_occupe: "Le port {port} est déjà utilisé par une autre application. Ferme-la, puis relance.",
+      cle_test_refusee: "Clé refusée par le fournisseur (HTTP {statut}). {detail}",
+      cle_test_refusee_sans_detail: "Clé refusée par le fournisseur (HTTP {statut}).",
+      fournisseur_injoignable: "Fournisseur injoignable (réseau). {detail}",
+      cle_autre_statut: "Le fournisseur a répondu HTTP {statut}. {detail}",
+      cle_autre_statut_sans_detail: "Le fournisseur a répondu HTTP {statut}.",
+      port_occupe: "Le port {port} est déjà utilisé par une autre application. Ferme-la, puis relance ApiVault Proxy.",
       port_indisponible: "Le service n'a pas pu démarrer sur le port {port}. La cause technique est dans le journal.",
       etat_port_occupe: "port occupé",
       provenance_alias: "présent dans {liste}",
+      aucun_sain_liste: "Aucun modèle sain pour l'instant · {n} modèle(s) listé(s)",
       jamais_verifie: "Aucune vérification enregistrée",
       demarrage_windows: "Démarrer avec Windows",
       astuce_demarrage: "Se lance 20 secondes après l'ouverture de session, réduit dans la zone de notification.",
@@ -734,12 +738,16 @@
       ff_requis: "Name, address, key and at least one model are required.",
       test_en_cours: "Testing the key…",
       cle_ok: "Key accepted — {n} model(s) listed in {ms} ms.",
-      cle_ko: "Key refused or unreachable (HTTP {statut}). {detail}",
-      cle_ko_sans_detail: "Key refused or unreachable (HTTP {statut}).",
-      port_occupe: "Port {port} is already used by another application. Close it, then start again.",
+      cle_test_refusee: "Key refused by the provider (HTTP {statut}). {detail}",
+      cle_test_refusee_sans_detail: "Key refused by the provider (HTTP {statut}).",
+      fournisseur_injoignable: "Provider unreachable (network). {detail}",
+      cle_autre_statut: "The provider answered HTTP {statut}. {detail}",
+      cle_autre_statut_sans_detail: "The provider answered HTTP {statut}.",
+      port_occupe: "Port {port} is already used by another application. Close it, then start ApiVault Proxy again.",
       port_indisponible: "The service could not start on port {port}. The technical cause is in the log.",
       etat_port_occupe: "port in use",
       provenance_alias: "present in {liste}",
+      aucun_sain_liste: "No healthy model yet · {n} model(s) listed",
       jamais_verifie: "No check recorded yet",
       demarrage_windows: "Start with Windows",
       astuce_demarrage: "Starts 20 seconds after you sign in, minimised to the notification area.",
@@ -1453,7 +1461,12 @@ function annulerConfirmationEffacement() {
       // « aucun modele disponible » ne doit pas s'afficher.
       valeur.textContent = t("dernier_etat_connu", { n: e.sains });
     } else {
-      valeur.textContent = t("aucun_dispo");
+      // A7 (audit 7 bis, point 3) : le detail liste les modeles juste en
+      // dessous ; ne pas affirmer qu'aucun n'existe. On dit qu'aucun n'est sain.
+      const total = [...resume.values()].reduce((n, r) => n + r.total, 0);
+      valeur.textContent = total > 0
+        ? t("aucun_sain_liste", { n: total })
+        : t("aucun_dispo");
     }
 
     detail.innerHTML = "";
@@ -1509,6 +1522,12 @@ function annulerConfirmationEffacement() {
 
       rendreBandeau(e);
 
+      // Nombre de modeles connus, quelle que soit leur sante : il faut le
+      // connaitre avant d'ecrire le texte d'etat (point 3 de l'audit 7 bis).
+      const totalUnique = new Set(
+        (e.alias || []).flatMap((a) => (a.cibles || []).map((c) => c.fournisseur + "/" + c.modele))
+      ).size;
+
       const pastille = $("pastille");
       pastille.className = "pastille";
       if (!e.actif) {
@@ -1529,8 +1548,13 @@ function annulerConfirmationEffacement() {
             ? t("jamais_verifie_session")
             : t("etat_repris_session", { d: duree(e.derniere_verification_s) });
       } else {
+        // A7 (audit 7 bis, point 3) : des modeles sont listes juste en dessous.
+        // Dire « aucun modele disponible » serait faux ; le vrai etat est
+        // « aucun n'est sain pour l'instant ».
         pastille.classList.add("alerte");
-        $("etat-texte").textContent = t("aucun_dispo");
+        $("etat-texte").textContent = totalUnique > 0
+          ? t("aucun_sain_liste", { n: totalUnique })
+          : t("aucun_dispo");
       }
 
       // P4 : l'animation « initialisation… » disparait d'elle-meme des la
@@ -1541,9 +1565,6 @@ function annulerConfirmationEffacement() {
       $("btn-demarrer").disabled = e.actif;
       $("btn-arreter").disabled = !e.actif;
 
-      const totalUnique = new Set(
-        (e.alias || []).flatMap((a) => (a.cibles || []).map((c) => c.fournisseur + "/" + c.modele))
-      ).size;
       // P3 : seuls les modèles confirmés pendant cette session comptent.
       $("sains").textContent = (e.sains_verifies !== undefined ? e.sains_verifies : e.sains) + " / " + totalUnique;
       $("reussite").textContent =
@@ -2178,16 +2199,33 @@ function annulerConfirmationEffacement() {
         const n = (r.modeles || []).length;
         resultat.textContent = t("cle_ok", { n, ms: r.duree_ms });
       } else {
-        // A6 : ne pas repeter « HTTP 401 » (deja dans le modele de phrase).
-        const detail = String(r.erreur || "")
-          .replace(new RegExp("^HTTP\\s*" + r.statut + "\\b\\s*"), "")
-          .trim();
-        resultat.textContent = detail
-          ? t("cle_ko", { statut: r.statut, detail })
-          : t("cle_ko_sans_detail", { statut: r.statut });
+        // A6 : ne pas repeter « HTTP 401 » (deja dans la phrase).
+        // A7 : deux causes distinctes. 401/403 = la cle est refusee ; aucune
+        // reponse du tout = le fournisseur est injoignable (reseau, DNS, TLS,
+        // delai). Les autres codes ne sont ni l'un ni l'autre.
+        const statut = Number(r.statut) || 0;
+        const brut = String(r.erreur || "").trim();
+        const detail = statut > 0
+          ? brut.replace(new RegExp("^HTTP\\s*" + statut + "\\b\\s*"), "").trim()
+          : brut;
+        if (statut === 401 || statut === 403) {
+          resultat.textContent = detail
+            ? t("cle_test_refusee", { statut, detail })
+            : t("cle_test_refusee_sans_detail", { statut });
+        } else if (statut === 0) {
+          resultat.textContent = t("fournisseur_injoignable", {
+            detail: detail || t("raison_inconnue"),
+          });
+        } else {
+          resultat.textContent = detail
+            ? t("cle_autre_statut", { statut, detail })
+            : t("cle_autre_statut_sans_detail", { statut });
+        }
       }
     } catch (err) {
-      resultat.textContent = t("cle_ko", { statut: 0, detail: String(err) });
+      // Lever d'invocation (ou reponse illisible) : rien n'a repondu, ce n'est
+      // pas un refus de cle.
+      resultat.textContent = t("fournisseur_injoignable", { detail: String(err) });
     }
   });
 
