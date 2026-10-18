@@ -50,21 +50,35 @@ pub struct AppState {
     chemin_debug: Option<PathBuf>,
 }
 
+/// Client des appels non streames (300 s de garde-fou).
+/// `Policy::none()` : aucune redirection amont n'est suivie, une reponse 3xx
+/// remonte donc telle quelle et devient une erreur explicite.
+fn client_http() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .connect_timeout(std::time::Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(format!("ApiVault_Proxy/{}", VERSION))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// Client des flux SSE. Pas de timeout global : un flux peut durer plusieurs
+/// minutes. Les bornes sont appliquees cote streaming (inactivite 120 s,
+/// duree totale 900 s). Aucune redirection suivie non plus.
+fn client_flux() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(format!("ApiVault_Proxy/{}", VERSION))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 impl AppState {
     pub fn nouveau(cfg: Config) -> AppState {
-        let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
-            .connect_timeout(std::time::Duration::from_secs(20))
-            .user_agent(format!("ApiVault_Proxy/{}", VERSION))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
-
-        // Pas de timeout global : un flux SSE peut durer plusieurs minutes.
-        let http_flux = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(20))
-            .user_agent(format!("ApiVault_Proxy/{}", VERSION))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+        let http = client_http();
+        let http_flux = client_flux();
 
         let dossier = dossier_donnees();
         let _ = std::fs::create_dir_all(&dossier);
@@ -1398,5 +1412,34 @@ mod tests {
             &entetes_avec("Bearer sk-apivault-autre")
         ));
         assert!(!jeton_valide("sk-apivault-test", &entetes_avec("")));
+    }
+
+    #[tokio::test]
+    async fn redirection_amont_non_suivie() {
+        use axum::routing::get;
+
+        let app = axum::Router::new()
+            .route(
+                "/redirige",
+                get(|| async {
+                    (
+                        StatusCode::FOUND,
+                        [(header::LOCATION, "http://127.0.0.1:1/ailleurs")],
+                    )
+                }),
+            )
+            .route("/ailleurs", get(|| async { "ne doit jamais etre atteint" }));
+
+        let ecoute = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let adresse = ecoute.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(ecoute, app).await;
+        });
+
+        let url = format!("http://{adresse}/redirige");
+        let reponse = client_http().get(&url).send().await.unwrap();
+        assert_eq!(reponse.status(), StatusCode::FOUND);
+        let reponse = client_flux().get(&url).send().await.unwrap();
+        assert_eq!(reponse.status(), StatusCode::FOUND);
     }
 }
