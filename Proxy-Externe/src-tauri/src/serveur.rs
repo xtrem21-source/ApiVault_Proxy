@@ -6,7 +6,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -85,6 +85,9 @@ pub struct AppState {
     /// Au moins une verification a eu lieu depuis le demarrage : l'etat affiche
     /// est alors une mesure, pas un etat repris du disque.
     verifie_session: AtomicBool,
+    /// LOT 6 : plafond mensuel en tokens (0 = desactive). Il peut etre change
+    /// depuis l'interface sans redemarrer la passerelle.
+    plafond: AtomicU64,
 }
 
 /// Client des appels non streames (300 s de garde-fou).
@@ -123,6 +126,7 @@ impl AppState {
         let cles = cfg.cles.clone();
         let preference_modele = cfg.modele_prefere.clone();
         let cfg_perso = cfg.perso.clone();
+        let plafond = cfg.plafond_mensuel;
         let adresses: HashMap<String, Vec<String>> = cfg
             .fournisseurs
             .iter()
@@ -147,7 +151,20 @@ impl AppState {
             semaphore: Arc::new(tokio::sync::Semaphore::new(8)),
             perso: Mutex::new(cfg_perso.clone()),
             verifie_session: AtomicBool::new(false),
+            plafond: AtomicU64::new(plafond),
         }
+    }
+
+    /// Plafond mensuel en tokens (0 = desactive). Lu a chaque requete : il peut
+    /// changer depuis l'interface sans redemarrer.
+    pub fn plafond(&self) -> u64 {
+        self.plafond.load(Ordering::Relaxed)
+    }
+
+    /// Applique un nouveau plafond en memoire (la persistance est faite par
+    /// `config::sauver_plafond`).
+    pub fn fixer_plafond(&self, valeur: u64) {
+        self.plafond.store(valeur, Ordering::Relaxed);
     }
 
     /// Cle actuellement utilisee pour un fournisseur (vide si absente).
@@ -881,6 +898,7 @@ impl AppState {
             semaphore: Arc::new(tokio::sync::Semaphore::new(8)),
             perso: Mutex::new(cfg_perso),
             verifie_session: AtomicBool::new(false),
+            plafond: AtomicU64::new(0),
         }
     }
 }
@@ -1535,14 +1553,10 @@ async fn admin_metriques(
     }
 
     match app.metriques.totaliser(&periode) {
-        Ok(totaux) => match serde_json::to_value(&totaux) {
-            Ok(valeur) => json_reponse(StatusCode::OK, valeur),
-            Err(e) => erreur_json(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("Totaux non serialisables : {}", e),
-                "metriques_invalides",
-            ),
-        },
+        Ok(totaux) => json_reponse(
+            StatusCode::OK,
+            crate::metriques::totaux_avec_plafond(&totaux, app.plafond()),
+        ),
         Err(e) => erreur_json(
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("Journal de metriques illisible : {}", e),
@@ -1758,6 +1772,46 @@ async fn chat_interne(
             "Champ 'messages' obligatoire.",
             "invalid_request",
         );
+    }
+
+    // Plafond mensuel (LOT 6) : controle sur les totaux du mois courant, avant
+    // tout appel amont, flux compris. Un journal illisible ne bloque pas : la
+    // disponibilite passe avant la stricte comptabilite, et c'est assume.
+    let plafond = app.plafond();
+    if plafond > 0 {
+        match app.metriques.totaliser(&crate::metriques::periode_courante()) {
+            Ok(totaux) => {
+                let utilise = totaux.entrees + totaux.sorties;
+                if utilise >= plafond {
+                    {
+                        let mut m = mesure.lock().unwrap_or_else(|e| e.into_inner());
+                        // Rien n'a ete consomme chez le fournisseur : pas de
+                        // ligne de mesures, seulement une trace au journal.
+                        m.rapporte = true;
+                    }
+                    app.journaliser_req(
+                        id,
+                        &format!(
+                            "plafond atteint : {} / {} tokens ({}), requete refusee sans appel amont",
+                            utilise, plafond, totaux.periode
+                        ),
+                    );
+                    return erreur_json(
+                        StatusCode::TOO_MANY_REQUESTS,
+                        &format!(
+                            "Plafond mensuel atteint : {} tokens utilises sur {} pour la periode {}. La requete n'a pas ete envoyee au fournisseur.",
+                            utilise, plafond, totaux.periode
+                        ),
+                        "plafond_atteint",
+                    );
+                }
+            }
+            // Fail-open assume : on sert la requete et le journal dit pourquoi.
+            Err(e) => app.journaliser_req(
+                id,
+                &format!("plafond non verifie : journal illisible ({})", e),
+            ),
+        }
     }
 
     let flux = payload.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -2749,6 +2803,7 @@ mod tests {
             chemin_cles: std::path::PathBuf::from("C:/temp/cles.env"),
             modele_prefere: None,
             perso: Vec::new(),
+            plafond_mensuel: 0,
         };
         let app = AppState::pour_test(cfg);
         // Une erreur amont peut recopier une cle : le diagnostic doit la masquer.
@@ -2804,6 +2859,7 @@ mod tests {
             chemin_cles: chemin.clone(),
             modele_prefere: None,
             perso: Vec::new(),
+            plafond_mensuel: 0,
         };
         let app = std::sync::Arc::new(AppState::pour_test(cfg));
         app.ajouter_fournisseur(
@@ -2953,6 +3009,7 @@ mod tests {
             chemin_cles: std::path::PathBuf::from("C:/temp/cles.env"),
             modele_prefere: None,
             perso: Vec::new(),
+            plafond_mensuel: 0,
         };
         let app = AppState::pour_test(cfg);
         let cible = Cible {

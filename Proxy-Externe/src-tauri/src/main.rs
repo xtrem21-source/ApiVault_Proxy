@@ -94,7 +94,25 @@ fn metriques(service: tauri::State<'_, Arc<Service>>, periode: Option<String>) -
         .metriques
         .totaliser(&periode)
         .map_err(|e| format!("Journal de metriques illisible : {}", e))?;
-    serde_json::to_value(&totaux).map_err(|e| format!("Totaux non serialisables : {}", e))
+    Ok(apivault_proxy::metriques::totaux_avec_plafond(
+        &totaux,
+        service.inner().app.plafond(),
+    ))
+}
+
+/// Enregistre le plafond mensuel (LOT 6) et l'applique sans redemarrer.
+#[tauri::command]
+fn sauver_plafond(service: tauri::State<'_, Arc<Service>>, valeur: u64) -> Result<Value, String> {
+    let app = &service.inner().app;
+    config::sauver_plafond(&app.cfg.chemin_cles, valeur)
+        .map_err(|e| format!("Plafond non enregistre : {}", e))?;
+    app.fixer_plafond(valeur);
+    app.journaliser(&format!("plafond mensuel regle a {} tokens", valeur));
+    let totaux = app
+        .metriques
+        .totaliser(&apivault_proxy::metriques::periode_courante())
+        .map_err(|e| format!("Journal de metriques illisible : {}", e))?;
+    Ok(apivault_proxy::metriques::totaux_avec_plafond(&totaux, valeur))
 }
 
 /// Ajout d'un fournisseur depuis l'interface (P8).
@@ -522,6 +540,7 @@ fn main() {
             interface_prete,
             diagnostic,
             metriques,
+            sauver_plafond,
             ajouter_fournisseur,
             tester_cle,
             quitter

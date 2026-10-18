@@ -79,6 +79,8 @@ pub struct Config {
     pub modele_prefere: Option<String>,
     /// Fournisseurs ajoutes depuis l'interface (`PROXY_FOURNISSEURS`).
     pub perso: Vec<Perso>,
+    /// Plafond mensuel en tokens d'entree + sortie (LOT 6). 0 = desactive.
+    pub plafond_mensuel: u64,
 }
 
 impl Config {
@@ -139,6 +141,7 @@ impl Config {
             chemin_cles: chemin,
             modele_prefere,
             perso,
+            plafond_mensuel: plafond_lu(&valeurs),
         }
     }
 
@@ -544,6 +547,30 @@ fn ajouter_ligne(chemin: &Path, ligne: &str) -> std::io::Result<()> {
 /// les commentaires et les autres lignes. La variable est ajoutee si absente.
 pub fn ecrire_variable(chemin: &Path, variable: &str, valeur: &str) -> std::io::Result<()> {
     ecrire_variable_options(chemin, variable, valeur, true)
+}
+
+/// Plafond mensuel lu dans les valeurs du fichier de cles (LOT 6).
+///
+/// 0 = plafond desactive, et c'est aussi la valeur d'une entree absente ou
+/// illisible : un mauvais reglage ne doit jamais bloquer le trafic.
+fn plafond_lu(valeurs: &HashMap<String, String>) -> u64 {
+    valeurs
+        .get("PROXY_PLAFOND_MENSUEL")
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+/// Plafond enregistre dans un fichier de cles, relu a froid.
+pub fn plafond_depuis_fichier(chemin: &Path) -> u64 {
+    lire_fichier(chemin)
+        .as_ref()
+        .map(plafond_lu)
+        .unwrap_or(0)
+}
+
+/// Enregistre le plafond mensuel dans le fichier de cles, donc chiffre.
+pub fn sauver_plafond(chemin: &Path, valeur: u64) -> std::io::Result<()> {
+    ecrire_variable(chemin, "PROXY_PLAFOND_MENSUEL", &valeur.to_string())
 }
 
 /// Identique a `ecrire_variable`, mais permet de ne pas ecraser la sauvegarde

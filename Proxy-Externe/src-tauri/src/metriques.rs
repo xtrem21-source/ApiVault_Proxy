@@ -224,6 +224,49 @@ pub fn totaliser_fichier(chemin: &Path, periode: &str) -> io::Result<Totaux> {
     Ok(totaux)
 }
 
+/// Champs additifs du plafond mensuel (LOT 6), joints aux totaux.
+///
+/// L'unite est `entrees + sorties` : le cache est deja compris dans l'entree,
+/// comme le fournisseur le renvoie. C'est volontairement prudent : le cache est
+/// facture moins cher. `niveau` vaut `desactive` sans plafond, puis `ok`,
+/// `alerte` des 80 % et `atteint`.
+pub fn champs_plafond(plafond: u64, totaux: &Totaux) -> serde_json::Value {
+    let utilise = totaux.entrees + totaux.sorties;
+    let pourcentage = if plafond == 0 {
+        0
+    } else {
+        utilise.saturating_mul(100) / plafond
+    };
+    let niveau = if plafond == 0 {
+        "desactive"
+    } else if utilise >= plafond {
+        "atteint"
+    } else if pourcentage >= 80 {
+        "alerte"
+    } else {
+        "ok"
+    };
+    serde_json::json!({
+        "plafond": plafond,
+        "utilise": utilise,
+        "pourcentage": pourcentage,
+        "niveau": niveau,
+    })
+}
+
+/// Totaux serialises, augmentes des champs du plafond.
+pub fn totaux_avec_plafond(totaux: &Totaux, plafond: u64) -> serde_json::Value {
+    let mut valeur = serde_json::to_value(totaux).unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(objet) = valeur.as_object_mut() {
+        if let Some(extra) = champs_plafond(plafond, totaux).as_object() {
+            for (cle, v) in extra {
+                objet.insert(cle.clone(), v.clone());
+            }
+        }
+    }
+    valeur
+}
+
 /// Ecrit et relit le journal de mesure.
 #[derive(Debug)]
 pub struct Metriques {
