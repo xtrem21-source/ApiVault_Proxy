@@ -403,6 +403,18 @@
     </section>
   </div>
 
+  <section class="carte" style="margin-top:12px" data-tip="tip_conso">
+    <div class="entete-carte">
+      <h2 data-i18n="conso_titre">Consommation du mois</h2>
+      <button id="btn-conso" class="mini" data-tip="tip_conso_actualiser" data-i18n="conso_actualiser">Actualiser</button>
+    </div>
+    <div class="ligne"><span class="cle" data-i18n="conso_requetes">Requêtes</span><span class="valeur" id="conso-requetes">—</span></div>
+    <div class="ligne"><span class="cle" data-i18n="conso_entrees">Tokens d'entrée</span><span class="valeur" id="conso-entrees">—</span></div>
+    <div class="ligne"><span class="cle" data-i18n="conso_sorties">Tokens de sortie</span><span class="valeur" id="conso-sorties">—</span></div>
+    <div class="ligne"><span class="cle" data-i18n="conso_cache">dont servis par le cache</span><span class="valeur" id="conso-cache">—</span></div>
+    <div class="astuce" id="conso-detail">—</div>
+  </section>
+
   <section class="carte" style="margin-top:12px">
     <div class="entete-carte">
       <h2 data-i18n="alias_titre">Alias et état des cibles</h2>
@@ -647,6 +659,17 @@
       tip_non_joignable: "Dernière erreur : {raison} ({d}). La sélection reste possible, vous êtes seulement averti.",
       etat_repris_session: "État repris au démarrage — {d}",
       jamais_verifie_session: "État repris au démarrage — jamais vérifié",
+      conso_titre: "Consommation du mois",
+      conso_requetes: "Requêtes",
+      conso_entrees: "Tokens d'entrée",
+      conso_sorties: "Tokens de sortie",
+      conso_cache: "dont servis par le cache",
+      conso_actualiser: "Actualiser",
+      conso_vide: "Aucune requête mesurée ce mois-ci.",
+      conso_detail: "{n} requête(s) estimée(s) : le fournisseur n'a pas renvoyé d'usage.",
+      conso_erreur: "Consommation indisponible : {message}",
+      tip_conso: "Compteurs lus dans metriques-AAAA-MM.jsonl, sur ce poste. Aucune clé n'y figure.",
+      tip_conso_actualiser: "Relit le fichier du mois en cours.",
     },
     en: {
       sous_titre: "OpenAI-compatible local gateway",
@@ -823,6 +846,17 @@
       tip_non_joignable: "Last error: {raison} ({d}). Selection is still allowed, you are only warned.",
       etat_repris_session: "State restored at startup — {d}",
       jamais_verifie_session: "State restored at startup — never checked",
+      conso_titre: "This month's usage",
+      conso_requetes: "Requests",
+      conso_entrees: "Input tokens",
+      conso_sorties: "Output tokens",
+      conso_cache: "of which cached",
+      conso_actualiser: "Refresh",
+      conso_vide: "No request measured this month.",
+      conso_detail: "{n} estimated request(s): the provider returned no usage.",
+      conso_erreur: "Usage unavailable: {message}",
+      tip_conso: "Counters read from metriques-AAAA-MM.jsonl on this machine. No key is stored there.",
+      tip_conso_actualiser: "Re-reads the current month's file.",
     },
   };
 
@@ -1878,6 +1912,35 @@ function annulerConfirmationEffacement() {
     setTimeout(() => { $("btn-copier").textContent = t("copier"); }, 1400);
   });
 
+  // LOT 5 : consommation du mois, relue depuis le journal de metriques.
+  // Aucune valeur n'est inventee : un mois sans requete affiche un texte, pas 0.
+  async function rafraichirConsommation() {
+    try {
+      const totaux = await invoke("metriques", { periode: null });
+      $("conso-requetes").textContent = totaux.requetes;
+      $("conso-entrees").textContent = totaux.entrees;
+      $("conso-sorties").textContent = totaux.sorties;
+      $("conso-cache").textContent = totaux.cache;
+      const detail = $("conso-detail");
+      if (totaux.requetes === 0) {
+        detail.textContent = t("conso_vide");
+      } else if (totaux.estimees > 0) {
+        detail.textContent = t("conso_detail", { n: totaux.estimees });
+      } else {
+        detail.textContent = totaux.periode;
+      }
+    } catch (e) {
+      $("conso-detail").textContent = t("conso_erreur", { message: String(e) });
+    }
+  }
+
+  $("btn-conso").addEventListener("click", async () => {
+    const bouton = $("btn-conso");
+    bouton.disabled = true;
+    await rafraichirConsommation();
+    bouton.disabled = false;
+  });
+
   $("btn-rafraichir").addEventListener("click", async () => {
     const bouton = $("btn-rafraichir");
     bouton.classList.add("occupe");
@@ -2061,6 +2124,7 @@ function annulerConfirmationEffacement() {
   majDemarrageWindows();
   rafraichir();
   rafraichirJournal();
+  rafraichirConsommation();
   setInterval(rafraichir, 1500);
   setInterval(rafraichirJournal, 2500);
 </script>
