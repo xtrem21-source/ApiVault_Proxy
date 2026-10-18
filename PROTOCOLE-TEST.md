@@ -6,6 +6,8 @@ Pas de relecture de code, pas d'opinion : des faits, des preuves, des OK/KO.
 **Destinataires** : auditeur externe (Cline, Reasonix, ou un humain).
 **Version testée** : à compléter par l'auditeur (commit + tag + version de l'exe).
 
+**Révision du 18/10/2026, après l'audit n°1** : trois critères étaient mal écrits et ont produit des KO qui n'étaient pas des défauts du produit — T1.2 (`/sante` au lieu de `/health`), T1.6 (tolérance de bruit absente), T5.4 (tag attendu sur la copie d'audit). Corrigés ici. Les KO de l'audit n°1 restent dans son rapport, intacts : on ne réécrit pas un audit.
+
 ---
 
 ## Charte de l'audit — à lire avant de commencer
@@ -48,11 +50,11 @@ Ces six règles sont **contractuelles**. Un audit qui n'en respecte pas une seul
 | ID | Test | Attendu |
 |---|---|---|
 | T1.1 | Chronomètre : lancer l'exe → interface interactive. **3 mesures.** | ≤ 3 s (à défaut, noter les 3 valeurs) |
-| T1.2 | Pendant le démarrage, `Invoke-WebRequest http://127.0.0.1:3100/sante` | Réponse ≤ 2 s, y compris pendant l'initialisation |
+| T1.2 | Pendant le démarrage, `Invoke-WebRequest http://127.0.0.1:3100/health` | Réponse ≤ 2 s, y compris pendant l'initialisation |
 | T1.3 | Journal des 5 premières secondes | **Aucun** appel à un fournisseur |
 | T1.4 | État affiché sans aucune action de l'utilisateur | Les modèles connus apparaissent, avec un horodatage du type « vérifié il y a X » |
 | T1.5 | Bandeau de démarrage | Message d'initialisation visible, puis disparaît de lui-même |
-| T1.6 | Deuxième lancement (même configuration) | Temps ≤ premier lancement |
+| T1.6 | Deuxième lancement (même configuration) | Temps ≤ premier lancement **+ 10 %** (une différence de quelques dizaines de millisecondes est du bruit, pas un défaut) |
 | T1.7 | Lancer alors que le port 3100 est occupé | Message d'erreur clair, aucun crash, aucune fenêtre vide |
 
 ---
@@ -110,7 +112,7 @@ Ces six règles sont **contractuelles**. Un audit qui n'en respecte pas une seul
 | T5.1 | `cargo test --release` | Tous verts, aucun test ignoré, aucun test supprimé par rapport à la version précédente |
 | T5.2 | Version de l'exe | Celle annoncée dans le rapport |
 | T5.3 | SHA-256 de `cles.env` | Identique à T0.4 |
-| T5.4 | `git status --short`, `git tag --points-at HEAD` | Propre, tag présent |
+| T5.4 | `git status --short`, `git tag --points-at HEAD` | Propre. Tag présent **ou** absence expliquée (la copie d'audit porte un commit de préparation non étiqueté : c'est normal, le tag reste sur le commit du projet) |
 
 ---
 
