@@ -23,6 +23,7 @@ use tokio::sync::watch;
 
 #[cfg(test)]
 use crate::pool::Pool;
+use crate::coffre;
 use crate::config::{
     construire_alias, decouper_adresses, dossier_donnees, ecrire_variable,
     ecrire_variable_sans_sauvegarde, modele_gratuit, sauver_modele_prefere, Alias, Cible, Config,
@@ -446,9 +447,11 @@ impl AppState {
 
         // Sauvegarde avant modification. `ecrire_variable` ne remplace qu'une
         // ligne : les commentaires et les autres variables restent intacts.
-        let _ = std::fs::copy(
+        // Sauvegarde avant modification, chiffree par le coffre : la copie de
+        // secours ne doit pas contenir l'ancienne cle en clair.
+        let _ = coffre::copier_chiffre(
             &self.cfg.chemin_cles,
-            self.cfg.chemin_cles.with_extension("env.bak"),
+            &self.cfg.chemin_cles.with_extension("env.bak"),
         );
 
         let mut liste: Vec<String> = self.cfg.perso.iter().map(|p| p.nom.clone()).collect();
@@ -2571,7 +2574,19 @@ mod tests {
         )
         .unwrap();
 
-        let contenu = std::fs::read_to_string(&chemin).unwrap();
+        // LOT 4 : lecture brute en garde-fou (rien en clair, ni dans le
+        // fichier ni dans sa sauvegarde), puis lecture metier via le coffre.
+        // Les assertions ci-dessous sont inchangees.
+        let brut = std::fs::read_to_string(&chemin).unwrap();
+        assert!(brut.starts_with(coffre::EN_TETE));
+        assert!(!brut.contains("cle-SECRET-42"));
+        let chemin_bak = dossier.join("cles.env.bak");
+        assert!(chemin_bak.exists(), "la sauvegarde .bak doit exister");
+        let brut_bak = std::fs::read_to_string(&chemin_bak).unwrap();
+        assert!(brut_bak.starts_with(coffre::EN_TETE));
+        assert!(!brut_bak.contains("cle-SECRET-42"));
+
+        let contenu = coffre::lire_texte(&chemin).unwrap();
         assert!(contenu.contains("# mon commentaire"));
         assert!(contenu.contains("PROXY_MASTER_KEY=abc"));
         assert!(contenu.contains("PROXY_FOURNISSEURS=mistral_test"));

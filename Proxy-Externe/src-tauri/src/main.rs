@@ -12,6 +12,7 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
+use apivault_proxy::coffre;
 use apivault_proxy::config;
 use apivault_proxy::serveur::{self, AppState, Service};
 
@@ -419,10 +420,35 @@ fn main() {
     let ms_config = debut.elapsed().as_millis();
     let port = configuration.port;
     let jeton = configuration.jeton.clone();
+    // LOT 4 : les cles ne doivent appartenir qu'a ce compte Windows. En
+    // revanche on ne touche pas aux droits d'un dossier qui n'est pas celui de
+    // l'application : un fichier designe par APIVAULT_CLE_ENV peut vivre sur
+    // le Bureau, dans Documents ou sur un partage, qui ne nous appartiennent pas.
+    let chemin_cles = configuration.chemin_cles.clone();
     let etat_partage = Arc::new(AppState::nouveau(configuration));
     let ms_pool = debut.elapsed().as_millis();
     etat_partage.journaliser(&format!("demarrage config : {} ms", ms_config));
     etat_partage.journaliser(&format!("demarrage pool : {} ms", ms_pool));
+
+    // Restriction des droits : retrait de l'heritage, seul le compte courant
+    // garde le controle. Un echec n'empeche pas de demarrer, mais il est
+    // journalise pour ne pas passer inapercu.
+    match config::dossier_a_restreindre(&chemin_cles, &config::dossier_donnees()) {
+        Some(dossier_cles) => match coffre::restreindre_droits(&dossier_cles) {
+            Ok(compte) => etat_partage.journaliser(&format!(
+                "droits du dossier de configuration : heritage retire, {} seul autorise",
+                compte
+            )),
+            Err(e) => etat_partage.journaliser(&format!(
+                "droits du dossier de configuration non restreints : {}",
+                e
+            )),
+        },
+        None => etat_partage.journaliser(&format!(
+            "droits non appliques : fichier de cles externe ({})",
+            chemin_cles.display()
+        )),
+    }
     let service = Service::nouveau(port, jeton, etat_partage);
 
     tauri::Builder::default()

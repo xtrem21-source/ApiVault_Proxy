@@ -1,11 +1,17 @@
 //! Chargement de la configuration locale (fichier `cles.env`).
 //!
 //! v0.1 : la configuration reste un simple fichier texte, comme la version A,
-//! pour que les deux projets restent interchangeables. Le coffre chiffre
-//! arrivera dans une version ulterieure.
+//! pour que les deux projets restent interchangeables.
+//!
+//! LOT 4 : le fichier n'est plus jamais ecrit en clair. Toute ecriture passe
+//! par `coffre` (DPAPI portee utilisateur, en-tete `APIVAULT-COFFRE-1`), y
+//! compris la sauvegarde `cles.env.bak`. Un fichier encore en clair reste
+//! lisible (migration), et il est remplace sur place au premier enregistrement.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+use crate::coffre;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Cible {
@@ -81,7 +87,11 @@ impl Config {
         let chemin = trouver_fichier_cles();
         let mut brut = lire_fichier(&chemin);
 
-        if brut.is_none() {
+        // Le modele n'est ecrit que si le fichier n'existe pas. Un fichier
+        // present mais illisible (coffre corrompu, autre compte Windows) est
+        // laisse intact : mieux vaut demarrer avec un jeton en memoire que
+        // detruire les cles de l'utilisateur.
+        if brut.is_none() && !chemin.exists() {
             let jeton = nouveau_jeton();
             let modele = format!(
                 "# ApiVault_Proxy - cles locales (ne pas partager)\n\
@@ -95,7 +105,7 @@ impl Config {
                  NVIDIA_KEY=\n",
                 jeton
             );
-            let _ = std::fs::write(&chemin, modele);
+            let _ = coffre::ecrire_atomique(&chemin, &modele);
             brut = lire_fichier(&chemin);
         }
 
@@ -347,6 +357,44 @@ pub fn dossier_donnees() -> PathBuf {
     }
 }
 
+/// Chemin normalise sans toucher au disque : `.` disparait, `..` remonte.
+fn normaliser(chemin: &Path) -> PathBuf {
+    let mut sortie = PathBuf::new();
+    for composant in chemin.components() {
+        match composant {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                sortie.pop();
+            }
+            autre => sortie.push(autre.as_os_str()),
+        }
+    }
+    sortie
+}
+
+/// Dossier dont on accepte de restreindre les droits.
+///
+/// Rend `Some(dossier)` seulement si le fichier de cles vit dans le dossier de
+/// donnees de l'application. Un fichier designe par `APIVAULT_CLE_ENV` peut
+/// pointer ailleurs (Bureau, Documents, partage reseau) : ce dossier ne nous
+/// appartient pas, on n'y touche pas.
+pub fn dossier_a_restreindre(chemin_cles: &Path, dossier_donnees: &Path) -> Option<PathBuf> {
+    let dossier = normaliser(chemin_cles.parent()?);
+    let racine = normaliser(dossier_donnees);
+    let racine_txt = racine.to_string_lossy().to_lowercase();
+    if racine_txt.is_empty() {
+        return None;
+    }
+    let dossier_txt = dossier.to_string_lossy().to_lowercase();
+    let dedans = dossier_txt == racine_txt
+        || dossier_txt.starts_with(&format!("{}{}", racine_txt, std::path::MAIN_SEPARATOR));
+    if dedans {
+        Some(dossier)
+    } else {
+        None
+    }
+}
+
 /// Ordre de recherche :
 /// 1. variable d'environnement APIVAULT_CLE_ENV
 /// 2. dossier de l'executable puis 4 parents (mode developpement)
@@ -377,7 +425,23 @@ fn trouver_fichier_cles() -> PathBuf {
 }
 
 fn lire_fichier(chemin: &Path) -> Option<HashMap<String, String>> {
-    let contenu = std::fs::read_to_string(chemin).ok()?;
+    // `coffre::lire_texte` dechiffre le fichier s'il porte l'en-tete du coffre,
+    // et rend le contenu tel quel sinon : une installation encore en clair
+    // reste donc lisible une derniere fois (migration).
+    let contenu = match coffre::lire_texte(chemin) {
+        Ok(contenu) => contenu,
+        Err(e) => {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                // Jamais de panique, et surtout on n'ecrase pas un coffre
+                // illisible : l'utilisateur peut encore le mettre de cote.
+                eprintln!(
+                    "cles.env illisible ({}). Le fichier n'a pas ete modifie : mets-le de cote ou supprime-le pour repartir proprement.",
+                    e
+                );
+            }
+            return None;
+        }
+    };
     let mut map = HashMap::new();
 
     for ligne in contenu.lines() {
@@ -407,12 +471,19 @@ fn lire_fichier(chemin: &Path) -> Option<HashMap<String, String>> {
 }
 
 fn ajouter_ligne(chemin: &Path, ligne: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(chemin)?;
-    writeln!(f, "{}", ligne)
+    // Plus d'ajout en fin de fichier : le fichier est relu (dechiffre si
+    // besoin), complete, puis reecrit chiffre et atomiquement.
+    let mut contenu = match coffre::lire_texte(chemin) {
+        Ok(contenu) => contenu,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
+    if !contenu.is_empty() && !contenu.ends_with('\n') {
+        contenu.push_str("\r\n");
+    }
+    contenu.push_str(ligne);
+    contenu.push_str("\r\n");
+    coffre::ecrire_atomique(chemin, &contenu)
 }
 
 /// Remplace la valeur d'une variable dans le fichier de cles, en conservant
@@ -437,13 +508,36 @@ fn ecrire_variable_options(
     valeur: &str,
     sauvegarde: bool,
 ) -> std::io::Result<()> {
-    // Sauvegarde de la version precedente (une seule generation) : une cle
-    // effacee par erreur reste ainsi recuperable dans cles.env.bak.
-    if sauvegarde && chemin.exists() {
-        let _ = std::fs::copy(chemin, chemin.with_extension("env.bak"));
+    // Une cle qui change (rotation) ou qui disparait (effacement) ne doit pas
+    // survivre dans la sauvegarde : la generation precedente est supprimee.
+    let ancienne = lire_fichier(chemin)
+        .and_then(|valeurs| valeurs.get(variable).cloned())
+        .unwrap_or_default();
+    let secrete = variable == "PROXY_MASTER_KEY" || variable.ends_with("_KEY");
+    let nouvelle = valeur.trim();
+    let effacement = secrete && !ancienne.is_empty() && nouvelle.is_empty();
+    let rotation = secrete && !ancienne.is_empty() && !nouvelle.is_empty() && ancienne != valeur;
+    let sauvegarde_proscrite = effacement || rotation;
+    let sauvegarde_bak = chemin.with_extension("env.bak");
+
+    // Sauvegarde de la version precedente (une seule generation) : une valeur
+    // ecrasee par erreur reste recuperable dans cles.env.bak. La copie passe
+    // par le coffre : meme la sauvegarde ne contient jamais de cle en clair.
+    if sauvegarde && chemin.exists() && !sauvegarde_proscrite {
+        let _ = coffre::copier_chiffre(chemin, &sauvegarde_bak);
+    }
+    if sauvegarde_proscrite {
+        // Efface aussi une sauvegarde laissee par une generation anterieure.
+        let _ = std::fs::remove_file(&sauvegarde_bak);
     }
 
-    let contenu = std::fs::read_to_string(chemin).unwrap_or_default();
+    // Relecture dechiffree : un fichier encore en clair (installation
+    // anterieure) est accepte et sera reecrit chiffre juste apres.
+    let contenu = match coffre::lire_texte(chemin) {
+        Ok(contenu) => contenu,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
     let prefixe = format!("{}=", variable);
     let mut lignes: Vec<String> = Vec::new();
     let mut trouve = false;
@@ -464,13 +558,10 @@ fn ecrire_variable_options(
 
     let mut texte = lignes.join("\r\n");
     texte.push_str("\r\n");
-    // Ecriture atomique : fichier temporaire dans le meme dossier puis
-    // renommage (MoveFileEx avec REPLACE_EXISTING sur Windows). Une coupure
-    // de courant ne laisse jamais un cles.env tronque.
-    let temporaire = chemin.with_extension("env.tmp");
-    std::fs::write(&temporaire, texte)?;
-    std::fs::rename(&temporaire, chemin)?;
-    Ok(())
+    // Ecriture atomique (temporaire dans le meme dossier puis renommage) et
+    // toujours chiffree : plus aucune cle en clair sur le disque, ni dans le
+    // fichier, ni dans sa sauvegarde.
+    coffre::ecrire_atomique(chemin, &texte)
 }
 
 /// Persiste le modele prefere dans le fichier de cles. Une valeur vide
@@ -574,12 +665,21 @@ mod tests {
         std::fs::write(&chemin, "PROXY_PORT=3100\r\nPROXY_MASTER_KEY=abc\r\n").unwrap();
 
         sauver_modele_prefere(&chemin, Some("deepseek-chat")).unwrap();
-        let texte = std::fs::read_to_string(&chemin).unwrap();
+        // LOT 4 : le format sur disque est desormais chiffre. La lecture brute
+        // reste en garde-fou (rien en clair), la lecture metier passe par le
+        // coffre. Les assertions metier ci-dessous sont inchangees.
+        let brut = std::fs::read_to_string(&chemin).unwrap();
+        assert!(brut.starts_with(crate::coffre::EN_TETE));
+        assert!(!brut.contains("abc"));
+        let texte = crate::coffre::lire_texte(&chemin).unwrap();
         assert!(texte.contains("PROXY_MODELE_PREFERE=deepseek-chat"));
         assert!(texte.contains("PROXY_MASTER_KEY=abc"));
 
         sauver_modele_prefere(&chemin, None).unwrap();
-        let texte = std::fs::read_to_string(&chemin).unwrap();
+        let brut = std::fs::read_to_string(&chemin).unwrap();
+        assert!(brut.starts_with(crate::coffre::EN_TETE));
+        assert!(!brut.contains("abc"));
+        let texte = crate::coffre::lire_texte(&chemin).unwrap();
         assert!(texte.contains("PROXY_MODELE_PREFERE="));
         assert!(!texte.contains("PROXY_MODELE_PREFERE=deepseek-chat"));
 
