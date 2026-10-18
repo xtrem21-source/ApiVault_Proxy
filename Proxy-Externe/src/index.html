@@ -194,6 +194,15 @@
   }
   .pied { margin-top: 12px; color: var(--doux); font-size: 11px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .astuce { color: var(--doux); font-size: 11px; margin-top: 8px; }
+  .jauge { height: 7px; border-radius: 999px; background: #101822; border: 1px solid var(--bord); overflow: hidden; margin: 8px 0 4px; }
+  .jauge-remplie { height: 100%; width: 0; background: var(--ok); transition: width .25s ease; }
+  .jauge-remplie[data-niveau="alerte"] { background: #f59e0b; }
+  .jauge-remplie[data-niveau="atteint"] { background: #ef4444; }
+  .jauge-remplie[data-niveau="desactive"] { background: #64748b; }
+  .badge.plafond_ok { color: #b9f5cf; background: rgba(34,197,94,.14); border-color: rgba(34,197,94,.35); }
+  .badge.plafond_alerte { color: #ffe0b0; background: rgba(245,158,11,.14); border-color: rgba(245,158,11,.35); }
+  .badge.plafond_atteint { color: #ffc3c3; background: rgba(239,68,68,.14); border-color: rgba(239,68,68,.35); }
+  .badge.plafond_desactive { color: #cfd8e3; background: rgba(139,153,168,.14); border-color: rgba(139,153,168,.3); }
   .bascule {
     display: flex; align-items: center; gap: 9px;
     margin-top: 12px; padding: 9px 11px;
@@ -413,6 +422,23 @@
     <div class="ligne"><span class="cle" data-i18n="conso_sorties">Tokens de sortie</span><span class="valeur" id="conso-sorties">—</span></div>
     <div class="ligne"><span class="cle" data-i18n="conso_cache">dont servis par le cache</span><span class="valeur" id="conso-cache">—</span></div>
     <div class="astuce" id="conso-detail">—</div>
+  </section>
+
+  <section class="carte" style="margin-top:12px" data-tip="tip_plafond">
+    <div class="entete-carte">
+      <h2 data-i18n="plafond_titre">Plafond mensuel</h2>
+      <span class="badge plafond_desactive" id="plafond-etat">—</span>
+    </div>
+    <div class="ligne">
+      <span class="cle" data-i18n="plafond_reglage">Plafond en tokens (0 = désactivé)</span>
+      <span class="valeur">
+        <input id="plafond-valeur" type="number" min="0" step="1000" style="width:110px" />
+        <button id="btn-plafond" class="mini" data-tip="tip_plafond_enregistrer" data-i18n="plafond_enregistrer">Enregistrer</button>
+      </span>
+    </div>
+    <div class="jauge"><div class="jauge-remplie" id="plafond-jauge"></div></div>
+    <div class="ligne"><span class="cle" data-i18n="plafond_utilise">Utilisé ce mois</span><span class="valeur" id="plafond-utilise">—</span></div>
+    <div class="astuce" data-i18n="plafond_prudence">Le cache compte pour 1 token alors qu'il est facturé moins cher : le plafond est donc prudent. Aucune réservation n'est faite, des requêtes déjà en vol peuvent le dépasser.</div>
   </section>
 
   <section class="carte" style="margin-top:12px">
@@ -670,6 +696,21 @@
       conso_erreur: "Consommation indisponible : {message}",
       tip_conso: "Compteurs lus dans metriques-AAAA-MM.jsonl, sur ce poste. Aucune clé n'y figure.",
       tip_conso_actualiser: "Relit le fichier du mois en cours.",
+      plafond_titre: "Plafond mensuel",
+      plafond_reglage: "Plafond en tokens (0 = désactivé)",
+      plafond_enregistrer: "Enregistrer",
+      plafond_utilise: "Utilisé ce mois",
+      plafond_utilise_valeur: "{utilise} / {plafond} tokens ({p} %)",
+      plafond_utilise_desactive: "{n} tokens utilisés, aucun plafond",
+      plafond_desactive: "désactivé",
+      plafond_ok: "sous le plafond",
+      plafond_alerte: "alerte : 80 % atteints",
+      plafond_atteint: "plafond atteint",
+      plafond_prudence: "Le cache compte pour 1 token alors qu'il est facturé moins cher : le plafond est donc prudent. Aucune réservation n'est faite, des requêtes déjà en vol peuvent le dépasser.",
+      plafond_invalide: "Valeur invalide : un entier positif, ou 0 pour désactiver.",
+      plafond_erreur: "Plafond non enregistré : {message}",
+      tip_plafond: "Contrôlé avant chaque appel au fournisseur, sur les totaux du mois en cours. Un journal illisible ne bloque jamais.",
+      tip_plafond_enregistrer: "Écrit le réglage dans le fichier de clés, donc chiffré au repos.",
     },
     en: {
       sous_titre: "OpenAI-compatible local gateway",
@@ -857,6 +898,21 @@
       conso_erreur: "Usage unavailable: {message}",
       tip_conso: "Counters read from metriques-AAAA-MM.jsonl on this machine. No key is stored there.",
       tip_conso_actualiser: "Re-reads the current month's file.",
+      plafond_titre: "Monthly cap",
+      plafond_reglage: "Cap in tokens (0 = disabled)",
+      plafond_enregistrer: "Save",
+      plafond_utilise: "Used this month",
+      plafond_utilise_valeur: "{utilise} / {plafond} tokens ({p} %)",
+      plafond_utilise_desactive: "{n} tokens used, no cap",
+      plafond_desactive: "disabled",
+      plafond_ok: "under the cap",
+      plafond_alerte: "warning: 80% reached",
+      plafond_atteint: "cap reached",
+      plafond_prudence: "Cache reads count as 1 token although they are billed less: the cap is therefore cautious. Nothing is reserved, so requests already in flight can exceed it.",
+      plafond_invalide: "Invalid value: a positive integer, or 0 to disable.",
+      plafond_erreur: "Cap not saved: {message}",
+      tip_plafond: "Checked before every provider call, on the current month's totals. An unreadable log never blocks.",
+      tip_plafond_enregistrer: "Writes the setting to the key file, so it is encrypted at rest.",
     },
   };
 
@@ -1914,6 +1970,25 @@ function annulerConfirmationEffacement() {
 
   // LOT 5 : consommation du mois, relue depuis le journal de metriques.
   // Aucune valeur n'est inventee : un mois sans requete affiche un texte, pas 0.
+  // Plafond mensuel (LOT 6) : la jauge et l'etat viennent des memes totaux.
+  function peindrePlafond(totaux) {
+    const plafond = Number(totaux.plafond || 0);
+    const utilise = Number(totaux.utilise || 0);
+    const pourcentage = Number(totaux.pourcentage || 0);
+    const niveau = totaux.niveau || "desactive";
+    $("plafond-valeur").value = String(plafond);
+    const etat = $("plafond-etat");
+    etat.textContent = t("plafond_" + niveau);
+    etat.className = "badge plafond_" + niveau;
+    const jauge = $("plafond-jauge");
+    jauge.dataset.niveau = niveau;
+    jauge.style.width = plafond === 0 ? "0%" : Math.min(100, pourcentage) + "%";
+    $("plafond-utilise").textContent =
+      plafond === 0
+        ? t("plafond_utilise_desactive", { n: utilise })
+        : t("plafond_utilise_valeur", { utilise: utilise, plafond: plafond, p: pourcentage });
+  }
+
   async function rafraichirConsommation() {
     try {
       const totaux = await invoke("metriques", { periode: null });
@@ -1929,10 +2004,24 @@ function annulerConfirmationEffacement() {
       } else {
         detail.textContent = totaux.periode;
       }
+      peindrePlafond(totaux);
     } catch (e) {
       $("conso-detail").textContent = t("conso_erreur", { message: String(e) });
     }
   }
+
+  $("btn-plafond").addEventListener("click", async () => {
+    const bouton = $("btn-plafond");
+    bouton.disabled = true;
+    try {
+      const valeur = Number($("plafond-valeur").value);
+      if (!Number.isInteger(valeur) || valeur < 0) throw new Error(t("plafond_invalide"));
+      peindrePlafond(await invoke("sauver_plafond", { valeur }));
+    } catch (e) {
+      $("plafond-utilise").textContent = t("plafond_erreur", { message: String(e) });
+    }
+    bouton.disabled = false;
+  });
 
   $("btn-conso").addEventListener("click", async () => {
     const bouton = $("btn-conso");
