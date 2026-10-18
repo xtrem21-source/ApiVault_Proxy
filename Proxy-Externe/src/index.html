@@ -489,6 +489,11 @@
       test_en_cours: "Test de la clé…",
       cle_ok: "Clé acceptée — {n} modèle(s) listé(s) en {ms} ms.",
       cle_ko: "Clé refusée ou injoignable (HTTP {statut}). {detail}",
+      cle_ko_sans_detail: "Clé refusée ou injoignable (HTTP {statut}).",
+      port_occupe: "Le port {port} est déjà utilisé par une autre application. Ferme-la, puis relance.",
+      port_indisponible: "Le service n'a pas pu démarrer sur le port {port}. La cause technique est dans le journal.",
+      etat_port_occupe: "port occupé",
+      provenance_alias: "présent dans {liste}",
       jamais_verifie: "Aucune vérification enregistrée",
       demarrage_windows: "Démarrer avec Windows",
       astuce_demarrage: "Se lance 20 secondes après l'ouverture de session, réduit dans la zone de notification.",
@@ -660,6 +665,11 @@
       test_en_cours: "Testing the key…",
       cle_ok: "Key accepted — {n} model(s) listed in {ms} ms.",
       cle_ko: "Key refused or unreachable (HTTP {statut}). {detail}",
+      cle_ko_sans_detail: "Key refused or unreachable (HTTP {statut}).",
+      port_occupe: "Port {port} is already used by another application. Close it, then start again.",
+      port_indisponible: "The service could not start on port {port}. The technical cause is in the log.",
+      etat_port_occupe: "port in use",
+      provenance_alias: "present in {liste}",
       jamais_verifie: "No check recorded yet",
       demarrage_windows: "Start with Windows",
       astuce_demarrage: "Starts 20 seconds after you sign in, minimised to the notification area.",
@@ -1078,6 +1088,8 @@ function annulerConfirmationEffacement() {
         tdEtat.appendChild(badge);
         // P10 : signaler clairement l'injoignable, sans empecher la selection.
         if (["en_panne", "en_pause", "epuise"].includes(c.statut)) {
+          // A3 : separateur explicite, sinon les deux libelles se collent.
+          tdEtat.appendChild(document.createTextNode(" · "));
           const injoignable = document.createElement("span");
           injoignable.className = "badge badge-injoignable";
           injoignable.textContent = t("non_joignable");
@@ -1338,8 +1350,11 @@ function annulerConfirmationEffacement() {
     } else if (actif) {
       valeur.textContent = actif.alias + " · " + actif.cible.fournisseur + "/" + actif.cible.modele;
       if (!preferredModel) valeur.textContent += " (" + t("aucun_defaut") + ")";
+    } else if (e.sains > 0) {
+      // A4 : la liste contient des modeles (etats repris) : le message
+      // « aucun modele disponible » ne doit pas s'afficher.
+      valeur.textContent = t("dernier_etat_connu", { n: e.sains });
     } else {
-      // P3 : que des etats repris du disque, aucun candidat confirme.
       valeur.textContent = t("aucun_dispo");
     }
 
@@ -1399,7 +1414,9 @@ function annulerConfirmationEffacement() {
       const pastille = $("pastille");
       pastille.className = "pastille";
       if (!e.actif) {
-        $("etat-texte").textContent = t("service_arrete");
+        $("etat-texte").textContent = e.erreur_code === "port_occupe"
+          ? t("etat_port_occupe")
+          : t("service_arrete");
       } else if (e.sondage) {
         pastille.classList.add("attente");
         $("etat-texte").textContent = t("verification");
@@ -1448,8 +1465,16 @@ function annulerConfirmationEffacement() {
 
       if (e.erreur) {
         pastille.classList.add("erreur");
-        $("etat-texte").textContent = t("erreur");
-        $("alerte").textContent = e.erreur;
+        $("etat-texte").textContent = e.erreur_code === "port_occupe"
+          ? t("etat_port_occupe")
+          : t("erreur");
+        // A1 : phrase explicite et actionnable ; la cause technique
+        // (os error 10048, ...) reste dans le journal.
+        $("alerte").textContent = e.erreur_code === "port_occupe"
+          ? t("port_occupe", { port: e.port })
+          : (e.erreur_code === "port_indisponible"
+            ? t("port_indisponible", { port: e.port })
+            : e.erreur);
         $("alerte").classList.add("visible");
       } else {
         $("alerte").classList.remove("visible");
@@ -1543,6 +1568,12 @@ function annulerConfirmationEffacement() {
         puce.className = "puce-modele " + (m.gratuit ? "gratuit" : "payant");
         puce.textContent = m.modele + (m.gratuit ? " · gratuit" : " · payant");
         puce.dataset.tip = m.gratuit ? "tip_gratuit" : "tip_payant";
+        // A5 : provenance conservee apres dedoublonnage (un modele peut
+        // apparaitre dans plusieurs alias).
+        if (Array.isArray(m.alias) && m.alias.length > 1) {
+          puce.dataset.tipTexte = t(m.gratuit ? "tip_gratuit" : "tip_payant") +
+            " · " + t("provenance_alias", { liste: m.alias.join(", ") });
+        }
         listeModeles.appendChild(puce);
       });
       bloc.appendChild(listeModeles);
@@ -1979,7 +2010,13 @@ function annulerConfirmationEffacement() {
         const n = (r.modeles || []).length;
         resultat.textContent = t("cle_ok", { n, ms: r.duree_ms });
       } else {
-        resultat.textContent = t("cle_ko", { statut: r.statut, detail: r.erreur || "" });
+        // A6 : ne pas repeter « HTTP 401 » (deja dans le modele de phrase).
+        const detail = String(r.erreur || "")
+          .replace(new RegExp("^HTTP\\s*" + r.statut + "\\b\\s*"), "")
+          .trim();
+        resultat.textContent = detail
+          ? t("cle_ko", { statut: r.statut, detail })
+          : t("cle_ko_sans_detail", { statut: r.statut });
       }
     } catch (err) {
       resultat.textContent = t("cle_ko", { statut: 0, detail: String(err) });
@@ -2006,7 +2043,7 @@ function annulerConfirmationEffacement() {
       $("ff-url").value = "";
       $("ff-cle").value = "";
       $("ff-modeles").value = "";
-      resultat.textContent = t("fournisseur_ajoute");
+      resultat.textContent = t("fournisseur_ajoute", { nom });
       setTimeout(rafraichir, 400);
     } catch (err) {
       resultat.textContent = String(err);

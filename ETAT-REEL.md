@@ -17,7 +17,7 @@ du 18/10/2026, après le sprint 0 d'assainissement.
 | Route | Méthode | Rôle |
 |---|---|---|
 | `/` | GET | Présentation en texte |
-| `/health`, `/health/liveliness`, `/health/readiness` | GET | État, version, alias, cibles |
+| `/health`, `/health/liveliness`, `/health/readiness` | GET | Sonde publique : `status` + `version` seulement, sans jeton |
 | `/v1/models`, `/models` | GET | Liste des alias au format OpenAI |
 | `/v1/models/{id}` | GET | Détail d'un alias |
 | `/v1/chat/completions`, `/chat/completions` | POST | Appel avec bascule automatique |
@@ -27,6 +27,17 @@ du 18/10/2026, après le sprint 0 d'assainissement.
 
 - Authentification `Authorization: Bearer …` ou `X-API-Key`, comparaison à temps constant.
 - **Fail-closed** : sans jeton configuré, toute requête reçoit 401.
+- **`Host` validé** : seuls `127.0.0.1[:port]` et `localhost[:port]` sont acceptés,
+  tout autre en-tête reçoit 403 `hote_refuse` (protection contre le DNS rebinding).
+- `/health` ne rend que `status` et `version` sans jeton ; l'interface n'en dépend
+  pas (elle utilise la commande Tauri `etat`).
+- Erreurs amont **rédigées avant affichage** : les clés connues, les jetons
+  `Bearer …` et les paramètres d'URL sensibles (`api_key`, `token`, `secret`,
+  `auth`, `pass`, `sig`, `credential`) sont remplacés par `***` dans la vue
+  exposée à l'interface (`erreur` et `detail`).
+- Port occupé : l'interface affiche « Le port 3100 est déjà utilisé par une autre
+  application. Ferme-la, puis relance. » ; la cause technique (`os error 10048`)
+  reste dans `journal.log`.
 - Alias : `gratuit`, `gratuit-secours`, `defaut`, `rapide`.
 - Bascule ordonnée selon l'alias, au plus 3 cibles (1 tentative + 2 bascules).
 - Budget : 45 s pour les tentatives/bascules, 300 s maximum par tentative.
@@ -68,14 +79,20 @@ du 18/10/2026, après le sprint 0 d'assainissement.
   « repris », « dernier état connu »). Une passe de fond unique, 60 s après le
   lancement, ne teste que les cibles jamais vues (4 en parallèle, 5 s chacune).
   Un échec d'appel réel, ou le bouton « Vérifier », déclenche une vérification.
-- Modèle non joignable (panne, pause, épuisé) : badge « non joignable » et
-  infobulle avec la dernière erreur et son ancienneté ; la sélection reste
-  possible.
+- Modèle non joignable (panne, pause, épuisé) : badge « non joignable », séparé
+  de l'état par « · », et infobulle avec la dernière erreur (rédigée) et son
+  ancienneté ; la sélection reste possible.
+- Panneau fournisseurs : une seule ligne par modèle même s'il est déclaré par
+  plusieurs alias ; la provenance (liste des alias) reste disponible.
+- « Aucun modèle disponible » ne s'affiche que si la liste est réellement vide.
+- Confirmation d'ajout nominative (« Fournisseur Mistral ajouté. ») et message
+  d'échec de clé sans répétition du code HTTP.
 - Journal du démarrage en ms : `config`, `pool`, `serveur`, `interface`, `total`.
 - Journal, pool (requalifier), démarrage avec Windows.
 - Bandeau fixe en haut, infobulles personnalisées, FR/EN.
-- Super IA : case désactivée, mention « bientôt », dans le panneau de droite
-  sous les jetons d'accès (« Gestion supérieure »).
+- Super IA : case désactivée, mention « en cours de développement » (prévue
+  pour la V2, sans date), dans le panneau de droite sous les jetons d'accès
+  (« Gestion supérieure »).
 
 ### Configuration
 
@@ -121,12 +138,17 @@ cargo test --release
 # Un seul fichier de tests d'intégration
 cargo test --release --test integration
 
+# Tests de sécurité (Host, /health, port occupé)
+cargo test --release --test lot3
+
 # Compilation de production
 cargo build --release
 ```
 
 ## Compteurs au 18/10/2026
 
-- 22 tests unitaires (modules `config`, `pool`, `serveur`).
+- 27 tests unitaires (modules `config`, `pool`, `serveur`).
 - 7 tests d'intégration (`tests/integration.rs`) sur la passerelle réelle.
+- 3 tests de sécurité et de disponibilité (`tests/lot3.rs`) : `/health` minimal,
+  `Host` refusé, port occupé.
 - Exécutable release : voir la taille mesurée dans le rapport de sprint.

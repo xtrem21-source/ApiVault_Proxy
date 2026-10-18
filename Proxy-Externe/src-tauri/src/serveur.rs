@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use axum::body::{Body, Bytes};
 use axum::extract::{Path as AxumPath, State as AxumState};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::middleware::Next;
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::Router;
@@ -292,6 +293,9 @@ impl AppState {
             .map(|(nom, f)| {
                 let nom = nom.as_str();
                 let cle = self.cle_fournisseur(nom);
+                // A5 : un modele peut etre declare par plusieurs alias ; une
+                // seule ligne, avec la provenance (liste des alias) conservee.
+                let par_modele = modeles_par_fournisseur(&alias, nom);
                 json!({
                     "id": nom,
                     "cle_env": f.cle_env,
@@ -299,22 +303,16 @@ impl AppState {
                     "cle_presente": !cle.is_empty(),
                     "cle_masquee": if cle.is_empty() { String::new() } else { masquer(&cle) },
                     "urls": self.adresses_fournisseur(nom),
-                    "cibles": alias
-                        .iter()
-                        .flat_map(|a| a.cibles.iter())
-                        .filter(|c| c.fournisseur == nom)
-                        .map(|c| c.modele.clone())
-                        .collect::<Vec<_>>(),
+                    "cibles": par_modele.iter().map(|(m, _)| m.clone()).collect::<Vec<_>>(),
                     // Detail par modele : le panneau affiche un badge
                     // gratuit / payant et peut tester le fournisseur d'un coup.
-                    "modeles": alias
+                    "modeles": par_modele
                         .iter()
-                        .flat_map(|a| a.cibles.iter())
-                        .filter(|c| c.fournisseur == nom)
-                        .map(|c| {
+                        .map(|(m, noms)| {
                             json!({
-                                "modele": c.modele,
-                                "gratuit": modele_gratuit(&c.modele),
+                                "modele": m,
+                                "gratuit": modele_gratuit(m),
+                                "alias": noms,
                             })
                         })
                         .collect::<Vec<_>>(),
@@ -802,10 +800,54 @@ impl AppState {
             "fournisseurs": fournisseurs,
             "alias": alias.iter().map(|a| json!({
                 "nom": a.nom,
-                "cibles": self.pool.vue(a),
+                "cibles": self.vue_redigee(a),
             })).collect::<Vec<_>>(),
             "journal": journal,
         })
+    }
+
+    /// Vue d'un alias telle qu'elle part vers l'interface : les erreurs amont
+    /// sont redigees avant affichage (B3).
+    pub fn vue_redigee(&self, alias: &Alias) -> Vec<Value> {
+        let mut cibles = self.pool.vue(alias);
+        for cible in cibles.iter_mut() {
+            for cle in ["erreur", "detail"] {
+                if let Some(Value::String(texte)) = cible.get_mut(cle) {
+                    *texte = self.rediger_erreur(texte);
+                }
+            }
+        }
+        cibles
+    }
+
+    /// Masque les secrets connus, les jetons `Bearer` et les parametres d'URL
+    /// sensibles avant qu'un texte d'erreur ne soit affiche.
+    pub fn rediger_erreur(&self, texte: &str) -> String {
+        let mut sortie = texte.to_string();
+        for secret in self.secrets_connus() {
+            if secret.chars().count() >= 6 {
+                sortie = sortie.replace(&secret, "***");
+            }
+        }
+        masquer_parametres(&masquer_porteur(&sortie))
+    }
+
+    fn secrets_connus(&self) -> Vec<String> {
+        let mut secrets: Vec<String> = self
+            .cfg
+            .cles
+            .values()
+            .filter(|v| !v.trim().is_empty())
+            .cloned()
+            .collect();
+        if let Ok(cles) = self.cles.lock() {
+            for valeur in cles.values() {
+                if !valeur.trim().is_empty() && !secrets.contains(valeur) {
+                    secrets.push(valeur.clone());
+                }
+            }
+        }
+        secrets
     }
 
     /// Constructeur minimal pour les tests : aucun fichier n'est touche.
@@ -841,6 +883,9 @@ pub struct Service {
     interface_vue: AtomicBool,
     stop: Mutex<Option<watch::Sender<bool>>>,
     erreur: Mutex<Option<String>>,
+    /// Code stable de la derniere erreur de demarrage (`port_occupe`, ...),
+    /// pour que l'interface affiche un message actionnable en FR et en EN.
+    erreur_code: Mutex<Option<String>>,
     depuis: Mutex<Option<Instant>>,
 }
 
@@ -854,6 +899,7 @@ impl Service {
             interface_vue: AtomicBool::new(false),
             stop: Mutex::new(None),
             erreur: Mutex::new(None),
+            erreur_code: Mutex::new(None),
             depuis: Mutex::new(None),
         });
         if service.jeton.trim().is_empty() {
@@ -881,6 +927,9 @@ impl Service {
         }
         if let Ok(mut e) = self.erreur.lock() {
             *e = None;
+        }
+        if let Ok(mut c) = self.erreur_code.lock() {
+            *c = None;
         }
 
         let srv = Arc::clone(self);
@@ -914,14 +963,36 @@ impl Service {
                 }
                 Err(e) => {
                     srv.actif.store(false, Ordering::SeqCst);
-                    let message = format!(
-                        "Impossible d'ecouter sur 127.0.0.1:{} : {} (port deja utilise ?)",
+                    // Cause technique : journal uniquement (os error 10048, ...).
+                    srv.app.journaliser(&format!(
+                        "Impossible d'ecouter sur 127.0.0.1:{} : {}",
                         srv.port, e
-                    );
+                    ));
+                    // Message affiche : explicite et actionnable, jamais la
+                    // seule trace technique.
+                    let (code, message) = if e.kind() == std::io::ErrorKind::AddrInUse {
+                        (
+                            "port_occupe",
+                            format!(
+                                "Le port {} est deja utilise par une autre application. Ferme-la, puis relance.",
+                                srv.port
+                            ),
+                        )
+                    } else {
+                        (
+                            "port_indisponible",
+                            format!(
+                                "Le service n'a pas pu demarrer sur le port {}. La cause technique est dans le journal.",
+                                srv.port
+                            ),
+                        )
+                    };
                     if let Ok(mut err) = srv.erreur.lock() {
-                        *err = Some(message.clone());
+                        *err = Some(message);
                     }
-                    srv.app.journaliser(&message);
+                    if let Ok(mut c) = srv.erreur_code.lock() {
+                        *c = Some(code.to_string());
+                    }
                 }
             }
 
@@ -962,6 +1033,7 @@ impl Service {
             "jeton": self.jeton,
             "jeton_masque": masquer(&self.jeton),
             "erreur": self.erreur.lock().ok().and_then(|e| e.clone()),
+            "erreur_code": self.erreur_code.lock().ok().and_then(|c| c.clone()),
             "depuis_s": self.depuis.lock().ok().and_then(|d| d.map(|i| i.elapsed().as_secs())),
             "version": VERSION,
             // « connecte » ne dit pas que le service tourne, mais qu'au moins
@@ -979,7 +1051,7 @@ impl Service {
             "chemin_cles": self.app.cfg.chemin_cles.display().to_string(),
             "alias": alias.iter().map(|a| json!({
                 "nom": a.nom,
-                "cibles": self.app.pool.vue(a),
+                "cibles": self.app.vue_redigee(a),
             })).collect::<Vec<_>>(),
         })
     }
@@ -1040,7 +1112,147 @@ pub fn routeur(app: Arc<AppState>) -> Router {
         // 16 MiB : un contexte de 200k tokens pese environ 0,8 Mo, la marge
         // couvre les longs historiques et les pieces jointes textuelles.
         .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024))
+        // B2 : un `Host` etranger est refuse avant tout traitement.
+        .layer(axum::middleware::from_fn(verifier_hote))
         .with_state(app)
+}
+
+/// Modeles d'un fournisseur, dedoublonnes, avec la liste des alias qui les
+/// declarent (A5).
+fn modeles_par_fournisseur(alias: &[Alias], nom: &str) -> Vec<(String, Vec<String>)> {
+    let mut par_modele: Vec<(String, Vec<String>)> = Vec::new();
+    for a in alias.iter() {
+        for c in a.cibles.iter().filter(|c| c.fournisseur == nom) {
+            match par_modele.iter_mut().find(|(m, _)| *m == c.modele) {
+                Some((_, noms)) => {
+                    if !noms.contains(&a.nom) {
+                        noms.push(a.nom.clone());
+                    }
+                }
+                None => par_modele.push((c.modele.clone(), vec![a.nom.clone()])),
+            }
+        }
+    }
+    par_modele
+}
+
+/// Masque le jeton qui suit `Bearer` (insensible a la casse).
+fn masquer_porteur(texte: &str) -> String {
+    let octets: Vec<char> = texte.chars().collect();
+    let minuscule: Vec<char> = texte.chars().map(|c| c.to_ascii_lowercase()).collect();
+    let mut resultat = String::new();
+    let mut copie = 0usize;
+    let mut i = 0usize;
+    while i + 6 <= octets.len() {
+        let mot: String = minuscule[i..i + 6].iter().collect();
+        if mot == "bearer" && i + 6 < octets.len() && octets[i + 6].is_whitespace() {
+            let mut debut = i + 6;
+            while debut < octets.len() && octets[debut].is_whitespace() {
+                debut += 1;
+            }
+            let mut fin = debut;
+            while fin < octets.len()
+                && !octets[fin].is_whitespace()
+                && !matches!(octets[fin], '"' | '\'' | ',' | ')' | ']' | ';')
+            {
+                fin += 1;
+            }
+            if fin > debut {
+                resultat.extend(&octets[copie..debut]);
+                resultat.push_str("***");
+                copie = fin;
+            }
+            i = fin;
+        } else {
+            i += 1;
+        }
+    }
+    resultat.extend(&octets[copie..]);
+    resultat
+}
+
+/// Masque la valeur des parametres d'URL dont le nom evoque un secret
+/// (`api_key`, `token`, `secret`, `auth`, `password`, `sig`).
+fn masquer_parametres(texte: &str) -> String {
+    let octets: Vec<char> = texte.chars().collect();
+    let mut plages: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0usize;
+    while i < octets.len() {
+        if octets[i] == '?' || octets[i] == '&' {
+            let debut_cle = i + 1;
+            let mut j = debut_cle;
+            while j < octets.len() && octets[j] != '=' && octets[j] != '&' && !octets[j].is_whitespace() {
+                j += 1;
+            }
+            if j < octets.len() && octets[j] == '=' {
+                let cle: String = octets[debut_cle..j]
+                    .iter()
+                    .map(|c| c.to_ascii_lowercase())
+                    .collect();
+                let debut_valeur = j + 1;
+                let mut k = debut_valeur;
+                while k < octets.len()
+                    && octets[k] != '&'
+                    && !octets[k].is_whitespace()
+                    && !matches!(octets[k], '"' | '\'' | ')' | ']' | ';')
+                {
+                    k += 1;
+                }
+                let sensible = ["key", "token", "secret", "auth", "pass", "sig", "credential"]
+                    .iter()
+                    .any(|motif| cle.contains(motif));
+                if sensible && k > debut_valeur {
+                    plages.push((debut_valeur, k));
+                }
+                i = k;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    if plages.is_empty() {
+        return texte.to_string();
+    }
+    let mut resultat = String::new();
+    let mut dernier = 0usize;
+    for (debut, fin) in plages {
+        resultat.extend(&octets[dernier..debut]);
+        resultat.push_str("***");
+        dernier = fin;
+    }
+    resultat.extend(&octets[dernier..]);
+    resultat
+}
+
+/// Refuse (403) tout en-tete `Host` qui n'est ni `127.0.0.1[:port]` ni
+/// `localhost[:port]` : protege contre le DNS rebinding.
+async fn verifier_hote(requete: axum::extract::Request, suite: Next) -> Response {
+    let hote = requete
+        .headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim().to_ascii_lowercase());
+    let autorise = match hote.as_deref() {
+        Some(h) => {
+            let nom = match h.rsplit_once(':') {
+                Some((nom, port)) if !nom.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => {
+                    nom
+                }
+                _ => h,
+            };
+            nom == "127.0.0.1" || nom == "localhost"
+        }
+        None => false,
+    };
+    if !autorise {
+        return erreur_json(
+            StatusCode::FORBIDDEN,
+            "Hote non autorise : adresse locale uniquement.",
+            "hote_refuse",
+        );
+    }
+    suite.run(requete).await
 }
 
 async fn racine() -> Response {
@@ -1053,16 +1265,14 @@ async fn racine() -> Response {
         .unwrap()
 }
 
-async fn sante(AxumState(app): AxumState<Arc<AppState>>) -> Response {
+/// Sonde publique : deux champs seulement, sans jeton. Tout ce qui est utile
+/// a l'interface passe par la commande Tauri `etat` ou par `/admin/...`.
+async fn sante() -> Response {
     json_reponse(
         StatusCode::OK,
         json!({
             "status": "ok",
-            "service": "apivault-proxy",
             "version": VERSION,
-            "uptime_s": app.debut.elapsed().as_secs(),
-            "alias": app.cfg.noms_alias(),
-            "cles_chargees": app.cfg.cles.keys().filter(|k| k.ends_with("_KEY")).count(),
         }),
     )
 }
@@ -1297,7 +1507,7 @@ async fn pool_vue(AxumState(app): AxumState<Arc<AppState>>, entetes: HeaderMap) 
         .map(|a| {
             json!({
                 "nom": a.nom,
-                "cibles": app.pool.vue(a),
+                "cibles": app.vue_redigee(a),
             })
         })
         .collect();
@@ -2383,5 +2593,142 @@ mod tests {
         assert!(!diagnostic.contains("cle-SECRET-42"));
 
         let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// A5 : un modele declare par deux alias n'apparait qu'une fois, mais la
+    /// provenance (liste des alias) est conservee.
+    #[test]
+    fn a5_modele_en_double_une_seule_ligne_avec_provenance() {
+        let alias = vec![
+            Alias {
+                nom: "defaut".to_string(),
+                cibles: vec![Cible {
+                    fournisseur: "openrouter".to_string(),
+                    modele: "modele-x".to_string(),
+                }],
+            },
+            Alias {
+                nom: "rapide".to_string(),
+                cibles: vec![
+                    Cible {
+                        fournisseur: "openrouter".to_string(),
+                        modele: "modele-x".to_string(),
+                    },
+                    Cible {
+                        fournisseur: "openrouter".to_string(),
+                        modele: "modele-y".to_string(),
+                    },
+                ],
+            },
+        ];
+        let modeles = modeles_par_fournisseur(&alias, "openrouter");
+        assert_eq!(
+            modeles.len(),
+            2,
+            "modele-x ne doit apparaitre qu'une fois : {modeles:?}"
+        );
+        let (_, provenance) = modeles
+            .iter()
+            .find(|(m, _)| m == "modele-x")
+            .expect("modele-x present");
+        assert!(provenance.contains(&"defaut".to_string()));
+        assert!(provenance.contains(&"rapide".to_string()));
+    }
+
+    // --- LOT 3 : correctifs d'interface (A2, A3, A4) ---------------------
+    // La page est embarquee a la compilation : ces tests echouent si les
+    // libelles ou les conditions regressent.
+
+    const PAGE: &str = include_str!("../../src/index.html");
+
+    /// A2 : le nom du fournisseur est substitue dans la confirmation.
+    #[test]
+    fn a2_le_nom_est_substitue_dans_la_confirmation() {
+        assert!(
+            PAGE.contains(r#"t("fournisseur_ajoute", { nom })"#),
+            "l'appel doit passer le nom en parametre"
+        );
+        assert!(
+            !PAGE.contains(r#"t("fournisseur_ajoute")"#),
+            "l'appel sans parametre laisse {{nom}} affiche"
+        );
+        assert!(
+            PAGE.contains("fournisseur_ajoute: \"Fournisseur {nom} ajouté.\""),
+            "le modele de phrase doit contenir {{nom}}"
+        );
+    }
+
+    /// A3 : un separateur explicite entre l'etat et « non joignable ».
+    #[test]
+    fn a3_separateur_entre_etat_et_non_joignable() {
+        assert!(
+            PAGE.contains(r#"tdEtat.appendChild(document.createTextNode(" · "));"#)
+                && PAGE.contains(r#"const injoignable = document.createElement("span");"#),
+            "le badge « non joignable » doit etre precede d'un separateur"
+        );
+        assert!(
+            !PAGE.contains("en attentenon joignable"),
+            "les deux libelles ne doivent jamais etre colles"
+        );
+    }
+
+    /// A4 : « Aucun modele disponible » seulement si la liste est vide.
+    #[test]
+    fn a4_aucun_modele_seulement_si_liste_vide() {
+        assert!(
+            PAGE.contains(r#"} else if (e.sains > 0) {"#)
+                && PAGE.contains(r#"t("dernier_etat_connu", { n: e.sains })"#),
+            "un etat repris doit afficher « dernier etat connu », pas « aucun modele »"
+        );
+    }
+
+    /// B3 : une erreur amont contenant une cle est redigee dans la vue
+    /// exposee a l'interface.
+    #[test]
+    fn b3_erreur_amont_redigee_avant_affichage() {
+        let secret = "sk-or-v1-SECRET-B3-123456";
+        let mut cles = HashMap::new();
+        cles.insert("OPENROUTER_KEY".to_string(), secret.to_string());
+        let cfg = Config {
+            port: 3100,
+            jeton: "jeton-test".to_string(),
+            cles,
+            alias: Vec::new(),
+            fournisseurs: HashMap::new(),
+            chemin_cles: std::path::PathBuf::from("C:/temp/cles.env"),
+            modele_prefere: None,
+            perso: Vec::new(),
+        };
+        let app = AppState::pour_test(cfg);
+        let cible = Cible {
+            fournisseur: "openrouter".to_string(),
+            modele: "modele-x".to_string(),
+        };
+        app.pool.enregistrer_echec(
+            &cible,
+            Some(500),
+            &format!(
+                "amont 500 : https://openrouter.ai/v1?api_key={secret}&autre=visible Authorization: Bearer {secret}",
+            ),
+        );
+        let alias = Alias {
+            nom: "defaut".to_string(),
+            cibles: vec![cible],
+        };
+        let vue = app.vue_redigee(&alias);
+        let texte = serde_json::to_string(&vue).unwrap();
+
+        assert!(!texte.contains(secret), "la cle fuit dans la vue : {texte}");
+        assert!(!texte.contains("api_key=sk"), "le parametre d'URL fuit : {texte}");
+        assert!(texte.contains("***"), "les secrets doivent etre masques : {texte}");
+        assert!(
+            texte.contains("visible"),
+            "les parametres non sensibles restent lisibles : {texte}"
+        );
+        // Le texte brut, lui, n'est pas modifie (le pool garde la trace).
+        assert!(app.pool.vue(&alias)[0]["erreur"]
+            .as_str()
+            .unwrap()
+            .contains(secret));
     }
 }
