@@ -1,5 +1,13 @@
 # Genere les icones de ApiVault_Proxy (cadenas blanc + fleches de passerelle).
 # Style : carre arrondi, degrade bleu, cadenas central, double fleche en bas.
+# OBSOLETE : le logo officiel est src-tauri/icons/icon.svg (trousseau, tuile bleue).
+param([switch]$AncienLogo)
+if (-not $AncienLogo) {
+    Write-Host "OBSOLETE : ce script redessine l'ancien cadenas." -ForegroundColor Yellow
+    Write-Host "Le logo officiel est src-tauri/icons/icon.svg. Pour l'ancien logo : -AncienLogo"
+    exit 1
+}
+
 Add-Type -AssemblyName System.Drawing
 
 $dossier = Join-Path $PSScriptRoot "..\src-tauri\icons"

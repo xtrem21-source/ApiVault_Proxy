@@ -62,6 +62,8 @@ du 18/10/2026, après le sprint 0 d'assainissement.
 - `%APPDATA%\ApiVault_Proxy\` : `journal.log`, état du pool.
 - Surcharge du chemin de configuration par `APIVAULT_CLE_ENV` (utilisée par les
   tests d'intégration).
+- Icônes : `outils/generer-icones.ps1` est obsolète, protégé par `-AncienLogo` ;
+  le logo officiel vient de `src-tauri/icons/icon.svg`.
 
 ## Ce qui n'est PAS implémenté
 
