@@ -48,6 +48,16 @@ const DELAI_CIBLE: Duration = Duration::from_secs(120);
 /// Au plus 3 cibles essayees : 1 tentative + 2 bascules.
 const CIBLES_MAX: usize = 3;
 
+/// Duree lisible dans le journal : en secondes des qu'on y est, en
+/// millisecondes en dessous (les tests raccourcissent les delais).
+fn duree_texte(d: Duration) -> String {
+    if d.as_secs() >= 1 {
+        format!("{} s", d.as_secs())
+    } else {
+        format!("{} ms", d.as_millis())
+    }
+}
+
 /// Delai surchargeable, en millisecondes. Les tests ne peuvent pas attendre
 /// 120 s : ils posent `APIVAULT_DELAI_CIBLE_MS` / `APIVAULT_BUDGET_BASCULE_MS`.
 /// Sans variable (cas normal), la valeur de production s'applique.
@@ -1879,9 +1889,9 @@ async fn chat_interne(
         let restant_bascule = budget_bascules.saturating_sub(debut_requete.elapsed());
         if restant_bascule.is_zero() {
             app.journaliser_req(id, &format!(
-                "alias={} : budget de {} s epuise, arret des bascules",
+                "alias={} : budget de {} epuise, arret des bascules",
                 alias.nom,
-                budget_bascules.as_secs()
+                duree_texte(budget_bascules)
             ));
             derniere = Some((
                 StatusCode::GATEWAY_TIMEOUT,
@@ -1927,9 +1937,9 @@ async fn chat_interne(
             let restant_bascule = budget_bascules.saturating_sub(debut_requete.elapsed());
             if restant_bascule.is_zero() {
                 app.journaliser_req(id, &format!(
-                    "alias={} : budget de {} s epuise avant {}/{}",
+                    "alias={} : budget de {} epuise avant {}/{}",
                     alias.nom,
-                    budget_bascules.as_secs(),
+                    duree_texte(budget_bascules),
                     cible.fournisseur,
                     cible.modele
                 ));
@@ -1948,11 +1958,11 @@ async fn chat_interne(
             {
                 Err(_) => {
                     app.journaliser_req(id, &format!(
-                        "alias={} cible={}/{} : delai de {} s depasse",
+                        "alias={} cible={}/{} : delai de {} depasse",
                         alias.nom,
                         cible.fournisseur,
                         cible.modele,
-                        delai_tentative.as_secs()
+                        duree_texte(delai_tentative)
                     ));
                     app.pool.enregistrer_echec(cible, Some(504), "delai depasse");
                     derniere = Some((
@@ -1968,18 +1978,18 @@ async fn chat_interne(
                     let restant = budget_bascules.saturating_sub(debut_requete.elapsed());
                     if restant.is_zero() {
                         app.journaliser_req(id, &format!(
-                            "alias={} : budget de {} s epuise, plus de bascule apres {}/{}",
+                            "alias={} : budget de {} epuise, plus de bascule apres {}/{}",
                             alias.nom,
-                            budget_bascules.as_secs(),
+                            duree_texte(budget_bascules),
                             cible.fournisseur,
                             cible.modele
                         ));
                         break 'cibles;
                     }
                     app.journaliser_req(id, &format!(
-                        "alias={} : bascule vers la cible suivante ({} s de budget restant)",
+                        "alias={} : bascule vers la cible suivante ({} de budget restant)",
                         alias.nom,
-                        restant.as_secs()
+                        duree_texte(restant)
                     ));
                     break;
                 }
