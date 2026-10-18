@@ -6,3 +6,6 @@ cles.env
 journal*.log
 *.log
 *.exe
+
+# Dossier de travail V2 (documentation seulement, jamais versionne)
+ApiVault_Proxy-V2/
