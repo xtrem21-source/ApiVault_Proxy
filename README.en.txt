@@ -1,7 +1,7 @@
 ApiVault_Proxy
 ==============
 
-[Français](LISEZ-MOI.txt) | **English**
+French version: LISEZ-MOI.txt | English
 
 Standalone local gateway, OpenAI-compatible.
 Listens only on 127.0.0.1 and requires a token.

@@ -1,7 +1,7 @@
 ApiVault_Proxy - version 1.0.0
 ==============================
 
-[Français](LISEZ-MOI.txt) | **English**
+French version: LISEZ-MOI.txt | English
 
 Local OpenAI-compatible gateway.
 One standalone executable: no Python, no Docker, no Node.
