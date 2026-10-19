@@ -26,8 +26,6 @@ Pas de Docker, pas de Python, pas de Node, pas de service système. Un exécutab
 | **La fenêtre de contrôle** — état du service, modèles joignables, jeton | **Gestion** — clés, adresses, test par fournisseur |
 | ![Consommation](docs/captures/03-consommation.png) | ![Plafond](docs/captures/04-plafond.png) |
 | **Consommation du mois** — entrée, sortie, cache, requêtes estimées | **Plafond mensuel** — jauge et alerte à 80 % |
-| ![Badges](docs/captures/05-badges.png) | ![Fournisseurs](docs/captures/06-fournisseurs.png) |
-| **Badges** — gratuit / payant, modèle par défaut | **États** — joignable, en attente, en panne |
 
 > Les captures vivent dans [`docs/captures/`](docs/captures/). Voir le
 > [guide de capture](docs/captures/LISEZ-MOI.md).
@@ -148,7 +146,7 @@ cd Proxy-Externe\src-tauri
 cargo test
 ```
 
-**88 tests** : 30 unitaires, 8 d'intégration, plus les suites de sécurité et de
+**88 tests** : 30 unitaires, 9 d'intégration, plus les suites de sécurité et de
 fonctionnalités (`lot3` à `lot7`). Aucun ne touche à une vraie clé : les tests
 utilisent des valeurs factices et des faux fournisseurs locaux.
 

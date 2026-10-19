@@ -1,8 +1,12 @@
 # Guide des captures — ApiVault Proxy
 
-Six captures suffisent pour la page GitHub. Elles sont déjà référencées dans le
-`README.md` : il suffit de déposer les fichiers **dans ce dossier**, **avec ces noms
-exacts**. Aucune modification du README ne sera nécessaire.
+Quatre captures suffisent pour la page GitHub — elles sont déjà référencées dans le
+`README.md`. Deux autres sont proposées en bonus : si tu les ajoutes, je les insère
+dans la galerie.
+
+Dépose les fichiers **dans ce dossier**, **avec ces noms exacts**.
+
+## Les quatre indispensables
 
 | Nom attendu | Ce qu'il faut montrer | Pourquoi cette capture |
 |---|---|---|
@@ -10,8 +14,13 @@ exacts**. Aucune modification du README ne sera nécessaire.
 | `02-panneau-gestion.png` | Le panneau « Gestion » ouvert, un fournisseur déplié | Montre où vivent les clés |
 | `03-consommation.png` | Le panneau de consommation du mois : entrée, sortie, cache, nombre de requêtes | Prouve que le compteur existe et qu'il est lisible |
 | `04-plafond.png` | La carte du plafond avec sa jauge, si possible en état d'alerte | Montre le garde-fou |
-| `05-badges.png` | Une ligne de modèles avec les badges « gratuit » / « payant » et l'étoile du modèle par défaut | Montre la logique de choix |
-| `06-fournisseurs.png` | L'état des fournisseurs : joignable, en attente, en panne, avec les boutons « Tester » | Montre le pool et ses états |
+
+## Les deux bonus
+
+| Nom attendu | Ce qu'il faut montrer |
+|---|---|
+| `05-badges.png` | Une ligne de modèles avec les badges « gratuit » / « payant » et l'étoile du modèle par défaut |
+| `06-fournisseurs.png` | L'état des fournisseurs : joignable, en attente, en panne, avec les boutons « Tester » |
 
 ## Avant de capturer — le point qui compte
 
