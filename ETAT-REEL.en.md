@@ -7,7 +7,7 @@ Factual reference document: what actually exists in the repository, as of
 
 ## Version
 
-- Application version: **1.0.0** (`Cargo.toml`, `tauri.conf.json`, `/health` header).
+- Application version: **1.0.2** (`Cargo.toml`, `tauri.conf.json`, `/health` header).
 - Binary: `Proxy-Externe/src-tauri/target/release/apivault-proxy.exe`.
 - Crate: `apivault-proxy` (technical name), product: `ApiVault_Proxy`.
 - Rust edition: 2021.
@@ -65,7 +65,7 @@ Factual reference document: what actually exists in the repository, as of
   condemns only that target; a 429 or 5xx pauses the target for 60 s.
 - Body limited to 16 MiB, 8 simultaneous upstream requests (semaphore).
 - Semaphore full: immediate 503 `gateway_busy`, no queueing.
-- `X-Request-Id` (8 hexadecimal characters) on every response and in every log
+- `X-Request-Id` (16 hexadecimal characters) on every response and in every log
   line attached to a request.
 
 ### Token counter (LOT 5)
@@ -194,6 +194,24 @@ Measurement and view only: no cap, no blocking, no real spending.
   password. Another account or a copy outside the session cannot decrypt, but a
   process running under the same account can read the keys; freed SSD blocks
   (TRIM, snapshots) may retain old versions.
+
+## Fixes in 1.0.2
+
+- `/v1/models` and `/v1/models/{id}` now use effective aliases: a provider added
+  from the UI is visible immediately.
+- Upstream addresses must use **HTTPS**; `http://` is accepted only for
+  `127.0.0.1` / `localhost` (tests and local fake provider).
+- The monthly cap total is kept in memory after the first load: the whole month's
+  JSONL is no longer re-read on every request.
+- `masquer()` slices by characters, not bytes: an accented token can no longer
+  panic the `etat` command.
+- The token is checked **before** acquiring the upstream semaphore.
+- Token comparison no longer returns early on a length mismatch.
+- `journal.log` is **rotated** to `journal.log.1` above 2 MB, and known keys are
+  redacted before writing.
+- `X-Request-Id` goes from 8 to **16** hexadecimal characters (64 bits).
+- Keys are not zeroized in memory (no `zeroize`): an accepted limitation,
+  consistent with protection at the Windows session boundary.
 
 ## What is NOT implemented
 

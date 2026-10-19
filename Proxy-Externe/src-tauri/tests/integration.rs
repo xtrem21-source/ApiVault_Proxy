@@ -406,7 +406,7 @@ async fn e_succes_ne_genere_qu_une_requete_amont() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    assert_eq!(id.len(), 8, "X-Request-Id doit faire 8 caracteres : {id}");
+    assert_eq!(id.len(), 16, "X-Request-Id doit faire 16 caracteres : {id}");
     assert!(id.chars().all(|c| c.is_ascii_hexdigit()), "recu : {id}");
 
     // Deuxieme requete : id different.

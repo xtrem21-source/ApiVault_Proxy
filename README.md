@@ -189,6 +189,7 @@ Dit franchement, pour que personne ne le découvre après installation :
 - pas de quotas par alias ni de prix en euros — seul le plafond global existe ;
 - pas d'API Anthropic (`/v1/messages`) ni d'`/v1/embeddings` ;
 - pas d'apprentissage automatique des modèles équivalents ;
+- pas de zeroize des clés en mémoire (limite assumée, protection à la frontière de session) ;
 - la Super IA n'est pas là.
 
 La spécification d'origine décrit l'intention ; deux points ont évolué en cours

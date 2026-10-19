@@ -187,6 +187,7 @@ Said plainly, so nobody discovers it after installing:
 - no per-alias quotas and no prices in euros — only the global cap exists;
 - no Anthropic API (`/v1/messages`) and no `/v1/embeddings`;
 - no automatic learning of equivalent models;
+- no zeroize of keys in memory (accepted limitation, protection at the session boundary);
 - Super IA is not there.
 
 The original specification describes the intent; two points changed along the way

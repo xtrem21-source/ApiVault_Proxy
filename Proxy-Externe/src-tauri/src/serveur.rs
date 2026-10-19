@@ -117,6 +117,9 @@ pub struct AppState {
     /// LOT 6 : plafond mensuel en tokens (0 = desactive). Il peut etre change
     /// depuis l'interface sans redemarrer la passerelle.
     plafond: AtomicU64,
+    /// Total du mois courant pour le plafond. Initialise depuis le JSONL au
+    /// premier controle, puis tenu a jour sans relire le mois a chaque requete.
+    plafond_utilise: Mutex<Option<(String, u64)>>,
 }
 
 /// Client des appels non streames (300 s de garde-fou).
@@ -181,6 +184,7 @@ impl AppState {
             perso: Mutex::new(cfg_perso.clone()),
             verifie_session: AtomicBool::new(false),
             plafond: AtomicU64::new(plafond),
+            plafond_utilise: Mutex::new(None),
         }
     }
 
@@ -194,6 +198,51 @@ impl AppState {
     /// `config::sauver_plafond`).
     pub fn fixer_plafond(&self, valeur: u64) {
         self.plafond.store(valeur, Ordering::Relaxed);
+    }
+
+    /// Total consomme pour le mois courant, pour le controle du plafond.
+    /// Le premier appel lit le JSONL ; les suivants utilisent le cache tenu a
+    /// jour par `ajouter_utilisation`, sans relire tout le mois.
+    pub fn utilisation_plafond(&self) -> std::io::Result<(String, u64)> {
+        let periode = crate::metriques::periode_courante();
+        let mut cache = self
+            .plafond_utilise
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some((p, total)) = cache.as_ref() {
+            if *p == periode {
+                return Ok((periode, *total));
+            }
+        }
+        let totaux = self.metriques.totaliser(&periode)?;
+        let utilise = totaux.entrees.saturating_add(totaux.sorties);
+        *cache = Some((periode.clone(), utilise));
+        Ok((periode, utilise))
+    }
+
+    /// Ajoute la consommation d'une requete au cache du plafond, apres
+    /// l'ecriture de sa ligne de metriques.
+    pub fn ajouter_utilisation(&self, tokens: u64) {
+        let periode = crate::metriques::periode_courante();
+        let mut cache = self
+            .plafond_utilise
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some((p, total)) = cache.as_mut() {
+            if *p == periode {
+                *total = total.saturating_add(tokens);
+                return;
+            }
+        }
+        if let Ok(totaux) = self.metriques.totaliser(&periode) {
+            *cache = Some((
+                periode,
+                totaux
+                    .entrees
+                    .saturating_add(totaux.sorties)
+                    .saturating_add(tokens),
+            ));
+        }
     }
 
     /// Cle actuellement utilisee pour un fournisseur (vide si absente).
@@ -425,9 +474,9 @@ impl AppState {
             return Err("Au moins une adresse est necessaire.".to_string());
         }
         for url in &urls {
-            if !url.starts_with("http://") && !url.starts_with("https://") {
+            if !adresse_upstream_valide(url) {
                 return Err(format!(
-                    "Adresse invalide : '{}' (elle doit commencer par http:// ou https://)",
+                    "Adresse invalide : '{}' (https:// requis ; http:// accepte uniquement vers 127.0.0.1/localhost)",
                     url
                 ));
             }
@@ -479,9 +528,9 @@ impl AppState {
             return Err("Une adresse est necessaire.".to_string());
         }
         for u in &urls {
-            if !u.starts_with("http://") && !u.starts_with("https://") {
+            if !adresse_upstream_valide(u) {
                 return Err(format!(
-                    "Adresse invalide : '{}' (http:// ou https:// attendu)",
+                    "Adresse invalide : '{}' (https:// requis ; http:// accepte uniquement vers 127.0.0.1/localhost)",
                     u
                 ));
             }
@@ -615,6 +664,24 @@ impl AppState {
     }
 
     pub fn journaliser(&self, message: &str) {
+        // Ne jamais laisser une cle connue atterrir dans journal.log, meme si
+        // un fournisseur la renvoie dans son corps d'erreur.
+        let mut message = masquer_porteur(message);
+        message = masquer_parametres(&message);
+        if let Ok(cles) = self.cles.try_lock() {
+            for (nom, valeur) in cles.iter() {
+                // Seules les vraies cles sont masquees : PROXY_PORT et les URL
+                // ne doivent pas etre remplaces dans les messages.
+                if (nom == "PROXY_MASTER_KEY" || nom.ends_with("_KEY"))
+                    && !valeur.trim().is_empty()
+                {
+                    message = message.replace(valeur.as_str(), "***");
+                }
+            }
+        }
+        if !self.cfg.jeton.trim().is_empty() {
+            message = message.replace(self.cfg.jeton.as_str(), "***");
+        }
         let ligne = format!("[{:>7.1}s] {}", self.debut.elapsed().as_secs_f64(), message);
         if let Ok(mut j) = self.journal.lock() {
             j.push_back(ligne.clone());
@@ -627,7 +694,11 @@ impl AppState {
                 .map(|m| m.len() > 2 * 1024 * 1024)
                 .unwrap_or(false);
             if trop_gros {
-                let _ = std::fs::write(chemin, b"");
+                // Rotation : on conserve journal.log.1 au lieu de vider le
+                // fichier, pour ne pas perdre la trace de l'incident.
+                let archive = chemin.with_extension("log.1");
+                let _ = std::fs::remove_file(&archive);
+                let _ = std::fs::rename(chemin, &archive);
             }
             use std::io::Write;
             if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -928,6 +999,7 @@ impl AppState {
             perso: Mutex::new(cfg_perso),
             verifie_session: AtomicBool::new(false),
             plafond: AtomicU64::new(0),
+            plafond_utilise: Mutex::new(None),
         }
     }
 }
@@ -1197,6 +1269,21 @@ fn modeles_par_fournisseur(alias: &[Alias], nom: &str) -> Vec<(String, Vec<Strin
     par_modele
 }
 
+fn adresse_upstream_valide(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    match parsed.scheme() {
+        "https" => true,
+        // HTTP n'est tolere que vers la boucle locale (tests, faux fournisseur).
+        "http" => matches!(
+            parsed.host_str(),
+            Some("127.0.0.1") | Some("localhost") | Some("::1") | Some("[::1]")
+        ),
+        _ => false,
+    }
+}
+
 /// Masque le jeton qui suit `Bearer` (insensible a la casse).
 fn masquer_porteur(texte: &str) -> String {
     let octets: Vec<char> = texte.chars().collect();
@@ -1342,9 +1429,8 @@ async fn modeles(AxumState(app): AxumState<Arc<AppState>>, entetes: HeaderMap) -
     if !app.autorise(&entetes) {
         return erreur_jeton();
     }
-    let data: Vec<Value> = app
-        .cfg
-        .alias
+    let alias = app.alias_effectifs();
+    let data: Vec<Value> = alias
         .iter()
         .map(|a| {
             json!({
@@ -1370,7 +1456,7 @@ async fn modele_unique(
     if !app.autorise(&entetes) {
         return erreur_jeton();
     }
-    if !app.cfg.alias.iter().any(|a| a.nom == id) {
+    if !app.alias_effectifs().iter().any(|a| a.nom == id) {
         return erreur_json(
             StatusCode::NOT_FOUND,
             &format!("Alias inconnu : '{}'", id),
@@ -1667,10 +1753,10 @@ async fn pool_requalifier(
 // Chat completions
 // ---------------------------------------------------------------------------
 
-/// Identifiant de requete : 8 caracteres hexadecimaux.
+/// Identifiant de requete : 16 caracteres hexadecimaux (64 bits).
 fn identifiant_requete() -> String {
     let brut = uuid::Uuid::new_v4().simple().to_string();
-    brut[..8].to_string()
+    brut[..16].to_string()
 }
 
 /// Ce qu'une requete a consomme, rempli au fil du relais.
@@ -1731,9 +1817,12 @@ async fn chat(
         e.estime = !m.usage_vu;
         e.tentative = m.tentative;
         e.flux = false;
-        if let Err(err) = app.metriques.enregistrer(&e) {
-            // Une mesure perdue ne doit jamais faire echouer la requete.
-            app.journaliser_req(&id, &format!("metriques : ecriture impossible ({})", err));
+        match app.metriques.enregistrer(&e) {
+            Ok(_) => app.ajouter_utilisation(e.tokens_in.saturating_add(e.tokens_out)),
+            Err(err) => {
+                // Une mesure perdue ne doit jamais faire echouer la requete.
+                app.journaliser_req(&id, &format!("metriques : ecriture impossible ({})", err));
+            }
         }
     }
 
@@ -1759,6 +1848,10 @@ async fn chat_interne(
     id: &str,
     mesure: Arc<std::sync::Mutex<Mesure>>,
 ) -> Response {
+    if !app.autorise(&entetes) {
+        return erreur_jeton();
+    }
+
     // Au plus 8 requetes amont simultanees. Le permis est conserve jusqu'a la
     // fin du flux (il est deplace dans le corps de reponse).
     let permis = match app.semaphore.clone().try_acquire_owned() {
@@ -1771,10 +1864,6 @@ async fn chat_interne(
             )
         }
     };
-
-    if !app.autorise(&entetes) {
-        return erreur_jeton();
-    }
 
     let mut payload: Value = match serde_json::from_slice(sans_bom(&corps)) {
         Ok(v) => v,
@@ -1833,9 +1922,8 @@ async fn chat_interne(
     // disponibilite passe avant la stricte comptabilite, et c'est assume.
     let plafond = app.plafond();
     if plafond > 0 {
-        match app.metriques.totaliser(&crate::metriques::periode_courante()) {
-            Ok(totaux) => {
-                let utilise = totaux.entrees + totaux.sorties;
+        match app.utilisation_plafond() {
+            Ok((periode, utilise)) => {
                 if utilise >= plafond {
                     {
                         let mut m = mesure.lock().unwrap_or_else(|e| e.into_inner());
@@ -1847,14 +1935,14 @@ async fn chat_interne(
                         id,
                         &format!(
                             "plafond atteint : {} / {} tokens ({}), requete refusee sans appel amont",
-                            utilise, plafond, totaux.periode
+                            utilise, plafond, periode
                         ),
                     );
                     return erreur_json(
                         StatusCode::TOO_MANY_REQUESTS,
                         &format!(
                             "Plafond mensuel atteint : {} tokens utilises sur {} pour la periode {}. La requete n'a pas ete envoyee au fournisseur.",
-                            utilise, plafond, totaux.periode
+                            utilise, plafond, periode
                         ),
                         "plafond_atteint",
                     );
@@ -2039,6 +2127,7 @@ async fn chat_interne(
                                 permis,
                                 Some(Arc::new(RapportFlux {
                                     metriques: Arc::clone(&app.metriques),
+                                    app: Arc::clone(&app),
                                     mesure: Arc::clone(&mesure),
                                     id: id.to_string(),
                                     alias: alias.nom.clone(),
@@ -2129,8 +2218,10 @@ async fn chat_interne(
                         cible.fournisseur,
                         cible.modele,
                         statut.as_u16(),
-                        if statut == StatusCode::UNAUTHORIZED || statut == StatusCode::FORBIDDEN {
+                        if statut == StatusCode::UNAUTHORIZED {
                             " (cle invalide : fournisseur condamne)"
+                        } else if statut == StatusCode::FORBIDDEN {
+                            " (acces refuse : pause temporaire)"
                         } else {
                             ""
                         },
@@ -2153,8 +2244,8 @@ async fn chat_interne(
                         continue;
                     }
 
-                    // 401/403 : le fournisseur est condamne (toutes ses cibles)
-                    // mais on bascule vers la cible suivante avant d'abandonner.
+                    // 401 : le fournisseur est condamne (toutes ses cibles).
+                    // 403 : simple pause ciblee, reprise par la reconciliation.
                     if reessayable(statut)
                         || statut == StatusCode::UNAUTHORIZED
                         || statut == StatusCode::FORBIDDEN
@@ -2244,6 +2335,7 @@ const TAMPON_FLUX_MAX: usize = 64 * 1024;
 /// Rapport de fin de flux : ecrit la ligne de metriques du flux.
 struct RapportFlux {
     metriques: Arc<crate::metriques::Metriques>,
+    app: Arc<AppState>,
     mesure: Arc<std::sync::Mutex<Mesure>>,
     id: String,
     alias: String,
@@ -2288,7 +2380,10 @@ impl RapportFlux {
                 e.estime = true;
             }
         }
-        let _ = self.metriques.enregistrer(&e);
+        if self.metriques.enregistrer(&e).is_ok() {
+            self.app
+                .ajouter_utilisation(e.tokens_in.saturating_add(e.tokens_out));
+        }
     }
 }
 
@@ -2571,21 +2666,26 @@ fn jeton_valide(attendu: &str, entetes: &HeaderMap) -> bool {
 
 fn egalite_constante(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut difference = 0u8;
-    for i in 0..a.len() {
-        difference |= a[i] ^ b[i];
+    // Pas de retour anticipe : la longueur entre dans la difference et la
+    // boucle parcourt toujours la plus grande des deux valeurs.
+    let mut difference = if a.len() == b.len() { 0u8 } else { 1u8 };
+    let max = a.len().max(b.len());
+    for i in 0..max {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        difference |= x ^ y;
     }
     difference == 0
 }
 
 fn masquer(jeton: &str) -> String {
-    if jeton.len() <= 12 {
+    let caracteres: Vec<char> = jeton.chars().collect();
+    if caracteres.len() <= 12 {
         return "…".to_string();
     }
-    format!("{}…{}", &jeton[..10], &jeton[jeton.len() - 4..])
+    let debut: String = caracteres.iter().take(10).collect();
+    let fin: String = caracteres.iter().skip(caracteres.len() - 4).collect();
+    format!("{}…{}", debut, fin)
 }
 
 fn tronquer(texte: &str, max: usize) -> String {
@@ -2753,7 +2853,7 @@ mod tests {
     fn identifiant_de_requete_unique_et_hexadecimal() {
         let a = identifiant_requete();
         let b = identifiant_requete();
-        assert_eq!(a.len(), 8);
+        assert_eq!(a.len(), 16);
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()), "recu : {a}");
         assert!(b.chars().all(|c| c.is_ascii_hexdigit()), "recu : {b}");
         assert_ne!(a, b, "deux requetes doivent porter deux ids differents");

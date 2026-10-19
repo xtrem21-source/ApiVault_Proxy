@@ -7,7 +7,7 @@ du 19/10/2026, après les lots 4 à 7 bis et la recette interne.
 
 ## Version
 
-- Version applicative : **1.0.0** (`Cargo.toml`, `tauri.conf.json`, en-tête `/health`).
+- Version applicative : **1.0.2** (`Cargo.toml`, `tauri.conf.json`, en-tête `/health`).
 - Binaire : `Proxy-Externe/src-tauri/target/release/apivault-proxy.exe`.
 - Crate : `apivault-proxy` (nom technique), produit : `ApiVault_Proxy`.
 - Édition Rust : 2021.
@@ -69,7 +69,7 @@ du 19/10/2026, après les lots 4 à 7 bis et la recette interne.
 - Corps limité à 16 MiB, 8 requêtes amont simultanées (sémaphore).
 - Sémaphore plein : réponse immédiate 503 `gateway_busy`, sans mise en file
   d'attente.
-- `X-Request-Id` (8 caractères hexadécimaux) sur chaque réponse et dans chaque
+- `X-Request-Id` (16 caractères hexadécimaux) sur chaque réponse et dans chaque
   ligne de journal rattachée à une requête.
 
 ### Compteur de tokens (LOT 5)
@@ -205,6 +205,25 @@ Mesure et vue uniquement : aucun plafond, aucun blocage, aucune dépense réelle
   passe. Un autre compte ou une copie hors session ne déchiffre pas, mais un
   processus tournant sous le même compte lit les clés ; les blocs libérés d'un
   SSD (TRIM, clichés instantanés) peuvent conserver d'anciennes versions.
+
+## Correctifs 1.0.2
+
+- `/v1/models` et `/v1/models/{id}` utilisent désormais les alias effectifs : un
+  fournisseur ajouté depuis l'interface est visible immédiatement.
+- Les adresses amont doivent être en **HTTPS** ; `http://` n'est accepté que vers
+  `127.0.0.1` / `localhost` (tests et faux fournisseur local).
+- Le total du plafond mensuel est tenu en mémoire après le premier chargement :
+  plus de relecture complète du JSONL du mois à chaque requête.
+- `masquer()` découpe par caractères, plus par octets : un jeton accentué ne peut
+  plus faire paniquer la commande `etat`.
+- Le jeton est vérifié **avant** l'acquisition du sémaphore amont.
+- La comparaison du jeton ne retourne plus immédiatement sur une longueur
+  différente.
+- `journal.log` est **rotationné** en `journal.log.1` au-delà de 2 Mo, et les clés
+  connues sont masquées avant écriture.
+- `X-Request-Id` passe de 8 à **16** caractères hexadécimaux (64 bits).
+- Les clés ne sont pas effacées de la mémoire (`zeroize` absent) : c'est une
+  limite assumée, cohérente avec la protection à la frontière de session Windows.
 
 ## Ce qui n'est PAS implémenté
 

@@ -1,4 +1,4 @@
-ApiVault_Proxy - version 1.0.0
+ApiVault_Proxy - version 1.0.2
 ==============================
 
 French version: LISEZ-MOI.txt | English
