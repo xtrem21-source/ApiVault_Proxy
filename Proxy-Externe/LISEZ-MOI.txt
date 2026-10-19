@@ -1,5 +1,5 @@
-ApiVault_Proxy - version 0.4
-============================
+ApiVault_Proxy - version 1.0.0
+==============================
 
 Passerelle locale compatible OpenAI.
 Un seul executable autonome : ni Python, ni Docker, ni Node.
@@ -52,10 +52,30 @@ Changer une cle API
 2. Changer-Cle.bat
    Meme chose en dehors de l'application : menu OpenRouter / DeepSeek /
    NVIDIA, saisie invisible, mise a jour de cles.env et redemarrage.
+   Sans question, pour un envoi automatise :
+       Changer-Cle.bat -Fournisseur deepseek -Cle sk-...
+   La cle fournie est verifiee (longueur, pas d'espace) avant toute ecriture.
 
-3. A la main : ouvrir cles.env, remplacer la ligne
-       OPENROUTER_KEY=...
-   puis Arreter.bat et Demarrer.bat.
+3. A la main : IMPOSSIBLE. Depuis la version 1.0.0, cles.env est un coffre
+   chiffre (voir « Coffre des cles »). Utilisez la fenetre « Gestion » ou
+   Changer-Cle.bat ; un script ou un editeur qui reecrit le fichier le
+   corrompt et la passerelle refuse alors de demarrer.
+
+Coffre des cles
+---------------
+cles.env ne contient plus de texte lisible : il commence par la ligne
+`APIVAULT-COFFRE-1`, suivie du contenu chiffre par Windows (DPAPI, compte
+utilisateur courant). Consequences :
+
+- le fichier n'est dechiffrable que par le compte Windows qui l'a cree ;
+  copie sur un autre compte ou une autre machine, il est illisible ;
+- inutile de le lire a la main : les scripts fournis (Etat.bat,
+  Rafraichir.bat, Changer-Cle.bat) savent le dechiffrer, avec les memes
+  droits que l'application ;
+- une copie cles.env.bak est creee avant chaque modification par
+  l'application ; elle suit le meme chiffrement ;
+- pour repartir de zero, supprimez cles.env : au lancement suivant, la
+  passerelle ecrit un modele neuf, deja chiffre (nouveau jeton, cles vides).
 
 Adresses multiples par fournisseur
 ----------------------------------
@@ -136,21 +156,34 @@ GET  /v1/models             alias disponibles
 
 Fichiers
 --------
-cles.env                   cles API locales (droits restreints, ne pas partager)
-cles.env.bak               copie de securite automatique avant chaque modification
-src/index.html             interface de controle
-src-tauri/src/main.rs      application Tauri (icone, fenetre, commandes)
-src-tauri/src/serveur.rs   passerelle HTTP, alias, streaming, sondage
-src-tauri/src/pool.rs      etats du pool, pauses, requalification
-src-tauri/src/config.rs    lecture de cles.env et table des alias
+L'archive se deplace et se lance telle quelle : tout est dans un seul
+dossier, sans installation. Ne deplacez pas l'executable seul.
+
+apivault-proxy.exe         passerelle et fenetre de controle
+Demarrer.bat               lance la passerelle et ouvre la fenetre
+Etat.bat                   etat du service, jeton et alias
+Rafraichir.bat             interroge de nouveau tous les fournisseurs
+Changer-Cle.bat            remplace une cle API et redemarre
+Arreter.bat                arrete la passerelle
+Autostart-Activer.bat      demarrage automatique a l'ouverture de session
+Autostart-Desactiver.bat   retire ce demarrage automatique
+LISEZ-MOI.txt              ce fichier
+outils\                    scripts PowerShell appeles par les .bat
+outils\commun.ps1          fonctions communes (executable, coffre, jeton)
+cles.env                   cles API locales, chiffrees (ne pas partager)
 
 %APPDATA%\ApiVault_Proxy\journal.log       journal des requetes (2 Mo max)
 %APPDATA%\ApiVault_Proxy\etat-pool.json    etat des cibles (persistant)
 
-Compilation
------------
-cd src-tauri
-cargo build --release
+Si Windows bloque un .bat au premier lancement, cliquez sur « Informations
+complementaires » puis « Executer quand meme » : les scripts ne sont pas
+signes.
+
+Pour les developpeurs
+---------------------
+Le code source et les instructions de compilation sont dans le depot
+(README.md a la racine). L'archive publiee ne contient que le binaire : rien
+n'est a compiler pour l'utiliser.
 
 Notes
 -----
@@ -160,6 +193,19 @@ Notes
   requalifie pas : cela evite de payer un aller-retour inutile a chaque appel.
 - Le sondage envoie une requete de quelques jetons : il consomme un minimum
   de quota, c'est volontaire.
+
+Nouveautes 1.0.0
+----------------
+- Distribution en dossier plat : apivault-proxy.exe a cote des .bat, plus
+  d'arborescence de developpement a respecter.
+- cles.env est chiffre (DPAPI, compte Windows courant) : le fichier n'est
+  plus lisible et ne se modifie plus a la main.
+- Les scripts lisent le coffre : Etat.bat et Rafraichir.bat retrouvent le
+  jeton, et Changer-Cle.bat modifie la cle sans jamais casser le coffre.
+- Changer-Cle.bat accepte -Fournisseur et -Cle (mode sans question).
+- Etat.bat et Rafraichir.bat suivent PROXY_PORT au lieu de supposer 3100.
+- Compteur de consommation, plafond mensuel, modele par defaut et reglages
+  conserves d'un demarrage a l'autre.
 
 Nouveautes 0.4
 --------------
