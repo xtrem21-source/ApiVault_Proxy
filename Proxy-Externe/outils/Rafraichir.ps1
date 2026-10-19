@@ -3,6 +3,17 @@
 $port = Lire-Port
 $fichier = Trouver-FichierCles
 
+try {
+    $present = Tester-EcouteAttendue -Port $port
+} catch {
+    "Securite : $($_.Exception.Message)"
+    exit 1
+}
+if (-not $present) {
+    "Service arrete : rien n'ecoute sur 127.0.0.1:$port."
+    exit 1
+}
+
 if (-not (Test-Path -LiteralPath $fichier -PathType Leaf)) {
     "cles.env introuvable : $fichier"
     exit 1

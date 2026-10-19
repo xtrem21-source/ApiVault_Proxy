@@ -191,5 +191,54 @@ function Ecrire-Coffre {
     $tmp = "$Chemin.tmp"
     $utf8 = New-Object System.Text.UTF8Encoding($false)
     [IO.File]::WriteAllText($tmp, "APIVAULT-COFFRE-1`r`n$base64`r`n", $utf8)
+    Restreindre-Fichier -Chemin $tmp
     Move-Item -LiteralPath $tmp -Destination $Chemin -Force
+}
+
+function Get-SidCourant {
+    <#
+    .SYNOPSIS
+        SID du compte Windows courant, sans dependre du domaine.
+    #>
+    return [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+}
+
+function Restreindre-Fichier {
+    <#
+    .SYNOPSIS
+        Ne laisse que le compte courant sur un fichier (SID, pas le nom).
+    #>
+    param([Parameter(Mandatory = $true)][string]$Chemin)
+    if (-not (Test-Path -LiteralPath $Chemin -PathType Leaf)) { return }
+    $sid = Get-SidCourant
+    icacls $Chemin /inheritance:r /grant:r "*$sid:(F)" | Out-Null
+}
+
+function Tester-EcouteAttendue {
+    <#
+    .SYNOPSIS
+        Verifie que le processus qui ecoute sur le port est bien notre exe.
+    .DESCRIPTION
+        Rend $false si personne n'ecoute. Leve une erreur si un autre processus
+        ecoute : aucun jeton ne doit lui etre envoye. Le chemin est compare en
+        absolu ; un processus inaccessible est traite comme inattendu.
+    #>
+    param([Parameter(Mandatory = $true)][int]$Port)
+
+    $ecoute = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $ecoute) { return $false }
+
+    $attendu = [IO.Path]::GetFullPath((Trouver-Executable))
+    try {
+        $processus = Get-Process -Id $ecoute.OwningProcess -ErrorAction Stop
+        $chemin = $processus.Path
+    } catch {
+        throw "Processus sur le port $Port impossible a identifier (pid $($ecoute.OwningProcess)). Rien n'a ete envoye."
+    }
+
+    if (-not $chemin -or [IO.Path]::GetFullPath($chemin) -ne $attendu) {
+        throw "Processus inattendu sur le port $Port (pid $($ecoute.OwningProcess), chemin '$chemin'). Rien n'a ete envoye."
+    }
+    return $true
 }

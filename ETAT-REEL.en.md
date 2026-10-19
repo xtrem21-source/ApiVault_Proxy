@@ -7,7 +7,7 @@ Factual reference document: what actually exists in the repository, as of
 
 ## Version
 
-- Application version: **1.0.2** (`Cargo.toml`, `tauri.conf.json`, `/health` header).
+- Application version: **1.0.3** (`Cargo.toml`, `tauri.conf.json`, `/health` header).
 - Binary: `Proxy-Externe/src-tauri/target/release/apivault-proxy.exe`.
 - Crate: `apivault-proxy` (technical name), product: `ApiVault_Proxy`.
 - Rust edition: 2021.
@@ -212,6 +212,20 @@ Measurement and view only: no cap, no blocking, no real spending.
 - `X-Request-Id` goes from 8 to **16** hexadecimal characters (64 bits).
 - Keys are not zeroized in memory (no `zeroize`): an accepted limitation,
   consistent with protection at the Windows session boundary.
+
+## Fixes in 1.0.3
+
+- `Etat`, `Rafraichir` and `Demarrer` check that the listening process is the
+  expected executable before sending the token.
+- `Changer-Cle` accepts any `<NOM>_KEY` provider; `-Cle` is replaced by
+  `-CleFichier` / `-CleEnv`.
+- `cles.env.bak` is deleted after a successful rotation.
+- ACLs use the current SID; the vault `.tmp` is restricted before replacement.
+- `POST /admin/arreter` provides a graceful stop; `Stop-Process -Force` is no
+  longer the first resort.
+- The archive uses `/` separators and the binary is built with
+  `--remap-path-prefix` + `strip = true`.
+- `icacls /inheritance:r` also removes SYSTEM/Administrators: deliberate choice.
 
 ## What is NOT implemented
 

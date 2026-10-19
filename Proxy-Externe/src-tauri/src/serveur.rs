@@ -120,6 +120,8 @@ pub struct AppState {
     /// Total du mois courant pour le plafond. Initialise depuis le JSONL au
     /// premier controle, puis tenu a jour sans relire le mois a chaque requete.
     plafond_utilise: Mutex<Option<(String, u64)>>,
+    /// Canal d'arret propre, partage avec `Service` pour `/admin/arreter`.
+    arret: Mutex<Option<watch::Sender<bool>>>,
 }
 
 /// Client des appels non streames (300 s de garde-fou).
@@ -185,6 +187,7 @@ impl AppState {
             verifie_session: AtomicBool::new(false),
             plafond: AtomicU64::new(plafond),
             plafond_utilise: Mutex::new(None),
+            arret: Mutex::new(None),
         }
     }
 
@@ -242,6 +245,15 @@ impl AppState {
                     .saturating_add(totaux.sorties)
                     .saturating_add(tokens),
             ));
+        }
+    }
+
+    /// Demande un arret propre du serveur HTTP (les flux en cours se terminent).
+    pub fn demander_arret(&self) {
+        if let Ok(mut garde) = self.arret.lock() {
+            if let Some(tx) = garde.take() {
+                let _ = tx.send(true);
+            }
         }
     }
 
@@ -1000,6 +1012,7 @@ impl AppState {
             verifie_session: AtomicBool::new(false),
             plafond: AtomicU64::new(0),
             plafond_utilise: Mutex::new(None),
+            arret: Mutex::new(None),
         }
     }
 }
@@ -1051,6 +1064,9 @@ impl Service {
         }
 
         let (tx, mut rx) = watch::channel(false);
+        if let Ok(mut a) = self.app.arret.lock() {
+            *a = Some(tx.clone());
+        }
         if let Ok(mut garde) = self.stop.lock() {
             *garde = Some(tx);
         }
@@ -1241,6 +1257,7 @@ pub fn routeur(app: Arc<AppState>) -> Router {
         .route("/admin/metriques", get(admin_metriques))
         .route("/admin/requalifier", post(pool_requalifier))
         .route("/admin/rafraichir", post(pool_rafraichir))
+        .route("/admin/arreter", post(admin_arreter))
         .fallback(route_inconnue)
         // 16 MiB : un contexte de 200k tokens pese environ 0,8 Mo, la marge
         // couvre les longs historiques et les pieces jointes textuelles.
@@ -1747,6 +1764,15 @@ async fn pool_requalifier(
             json_reponse(StatusCode::OK, json!({ "ok": true, "toutes": true }))
         }
     }
+}
+
+async fn admin_arreter(AxumState(app): AxumState<Arc<AppState>>, entetes: HeaderMap) -> Response {
+    if !app.autorise(&entetes) {
+        return erreur_jeton();
+    }
+    app.journaliser("arret demande via /admin/arreter");
+    app.demander_arret();
+    json_reponse(StatusCode::OK, json!({ "ok": true }))
 }
 
 // ---------------------------------------------------------------------------

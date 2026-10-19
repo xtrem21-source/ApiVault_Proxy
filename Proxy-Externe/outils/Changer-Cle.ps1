@@ -1,16 +1,22 @@
 param(
-    # "" autorise : l'utilisateur choisit alors dans la liste.
-    [ValidateSet("", "openrouter", "deepseek", "nvidia")]
+    # Nom du fournisseur : openrouter, deepseek, nvidia, ou tout nom ajoute
+    # depuis l'interface (<NOM>_KEY dans cles.env).
     [string]$Fournisseur = "",
-    # Renseigner -Cle evite toute question : indispensable aux verifications
-    # automatisees, pratique aussi pour un envoi par un autre script.
-    [string]$Cle = ""
+    # Mode non interactif : cle lue depuis un fichier (jamais en argument).
+    [string]$CleFichier = "",
+    # Mode non interactif : cle lue depuis une variable d'environnement
+    # temporaire, supprimee du processus apres lecture.
+    [string]$CleEnv = ""
 )
 
 . (Join-Path $PSScriptRoot "commun.ps1")
 
-$fichier = Trouver-FichierCles
+if ($CleFichier -and $CleEnv) {
+    "Choisissez -CleFichier ou -CleEnv, pas les deux. Rien n'a ete modifie."
+    exit 1
+}
 
+$fichier = Trouver-FichierCles
 if (-not (Test-Path -LiteralPath $fichier -PathType Leaf)) {
     "cles.env introuvable : $fichier"
     "Lancez l'application une premiere fois : elle cree le fichier chiffre."
@@ -19,35 +25,35 @@ if (-not (Test-Path -LiteralPath $fichier -PathType Leaf)) {
 
 if (-not $Fournisseur) {
     ""
-    "Quelle cle voulez-vous changer ?"
-    "  1) OpenRouter"
-    "  2) DeepSeek"
-    "  3) NVIDIA"
-    ""
-    $choix = Read-Host "Choix (1-3)"
-    switch ($choix) {
-        "1" { $Fournisseur = "openrouter" }
-        "2" { $Fournisseur = "deepseek" }
-        "3" { $Fournisseur = "nvidia" }
-        default { "Choix invalide."; exit 1 }
+    "Nom du fournisseur (openrouter, deepseek, nvidia, ou nom ajoute dans Gestion)."
+    $Fournisseur = Read-Host "Fournisseur"
+}
+$Fournisseur = $Fournisseur.Trim().ToLowerInvariant()
+if ($Fournisseur -notmatch '^[a-z0-9_]{2,32}$') {
+    "Nom de fournisseur invalide : lettres minuscules, chiffres et _ (2 a 32)."
+    exit 1
+}
+$variable = $Fournisseur.ToUpperInvariant() + "_KEY"
+
+if ($CleFichier) {
+    if (-not (Test-Path -LiteralPath $CleFichier -PathType Leaf)) {
+        "Fichier de cle introuvable : $CleFichier"
+        exit 1
     }
-}
-
-$variable = switch ($Fournisseur) {
-    "openrouter" { "OPENROUTER_KEY" }
-    "deepseek"   { "DEEPSEEK_KEY" }
-    "nvidia"     { "NVIDIA_KEY" }
-}
-
-if ($Cle) {
-    # Mode non interactif : la cle arrive en argument.
-    $clair = $Cle.Trim()
+    $clair = [IO.File]::ReadAllText($CleFichier).Trim()
+} elseif ($CleEnv) {
+    $clair = [Environment]::GetEnvironmentVariable($CleEnv)
+    Remove-Item "Env:$CleEnv" -ErrorAction SilentlyContinue
+    if (-not $clair) {
+        "Variable d'environnement vide ou absente : $CleEnv"
+        exit 1
+    }
+    $clair = $clair.Trim()
 } else {
     ""
     "Nouvelle cle $Fournisseur."
     "Collez-la puis validez (la saisie reste invisible)."
     $secret = Read-Host "Cle" -AsSecureString
-
     $pointeur = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret)
     try {
         $clair = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointeur)
@@ -67,43 +73,36 @@ if ($clair -match "\s") {
 }
 
 # --- Lecture du coffre. Si elle echoue, on n'ecrit RIEN. -------------------
-# Le defaut precedent venait d'ici : Get-Content sur le fichier chiffre, puis
-# reecriture en clair sous l'en-tete du coffre, donc coffre corrompu.
 try {
     $texte = Lire-Clair -Chemin $fichier
 } catch {
     "Refus : le fichier de cles n'a pas pu etre dechiffre, rien n'a ete ecrit."
     "  $($_.Exception.Message)"
-    "  Verifiez que le fichier appartient bien a votre compte Windows."
+    exit 1
+}
+
+if ($texte -notmatch "(?m)^$variable=") {
+    "Fournisseur inconnu dans cles.env : variable $variable absente."
+    "Ajoutez-le d'abord depuis Gestion, puis relancez ce script."
     exit 1
 }
 
 $lignes = New-Object System.Collections.Generic.List[string]
 foreach ($ligne in ($texte -split "`r?`n")) {
-    # Un BOM eventuel ne doit pas coller au premier nom de variable.
     $lignes.Add($ligne.TrimStart([char]0xFEFF))
 }
-# Un fichier termine par un saut de ligne produit une derniere entree vide :
-# on la retire pour ne pas accumuler des lignes vides a chaque changement.
 while ($lignes.Count -gt 0 -and $lignes[$lignes.Count - 1] -eq "") {
     $lignes.RemoveAt($lignes.Count - 1)
 }
 
-$trouve = $false
 for ($i = 0; $i -lt $lignes.Count; $i++) {
     if ($lignes[$i] -match "^$variable=") {
         $lignes[$i] = "$variable=$clair"
-        $trouve = $true
     }
 }
-if (-not $trouve) {
-    $lignes.Add("$variable=$clair")
-}
-
 $nouveau = ($lignes -join "`r`n") + "`r`n"
 
 try {
-    # Ecriture chiffree, par un .tmp remplace atomiquement. Jamais de clair.
     Ecrire-Coffre -Chemin $fichier -Texte $nouveau
 } catch {
     "Echec de l'ecriture du coffre : le fichier d'origine est intact."
@@ -111,17 +110,24 @@ try {
     exit 1
 }
 
-# Droits du fichier : il contient la seule copie des cles.
-icacls $fichier /inheritance:r /grant:r "$($env:USERNAME):(F)" | Out-Null
+# Le SID est plus fiable que le nom (domaine, comptes locaux, renommage).
+Restreindre-Fichier -Chemin $fichier
+# Une cle compromise ne doit pas survivre dans la sauvegarde de rotation.
+Remove-Item -LiteralPath "$fichier.bak" -Force -ErrorAction SilentlyContinue
 $clair = $null
 
 "Cle $Fournisseur mise a jour (coffre chiffre)."
 
-# Redemarrage : la configuration est lue au lancement.
-$tache = Get-ScheduledTask -TaskName "ApiVault_Proxy_Externe" -ErrorAction SilentlyContinue
-Get-Process -Name apivault-proxy -ErrorAction SilentlyContinue | Stop-Process -Force
+# Arret propre : la route admin laisse les flux en cours se terminer.
+$arret = Join-Path $PSScriptRoot "Arreter.ps1"
+if (Test-Path -LiteralPath $arret -PathType Leaf) {
+    & $arret | Out-Host
+} else {
+    Get-Process -Name apivault-proxy -ErrorAction SilentlyContinue | Stop-Process -Force
+}
 Start-Sleep -Milliseconds 800
 
+$tache = Get-ScheduledTask -TaskName "ApiVault_Proxy_Externe" -ErrorAction SilentlyContinue
 $exe = Trouver-Executable
 if ($tache) {
     Start-ScheduledTask -TaskName "ApiVault_Proxy_Externe"

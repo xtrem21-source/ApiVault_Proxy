@@ -7,7 +7,7 @@ du 19/10/2026, après les lots 4 à 7 bis et la recette interne.
 
 ## Version
 
-- Version applicative : **1.0.2** (`Cargo.toml`, `tauri.conf.json`, en-tête `/health`).
+- Version applicative : **1.0.3** (`Cargo.toml`, `tauri.conf.json`, en-tête `/health`).
 - Binaire : `Proxy-Externe/src-tauri/target/release/apivault-proxy.exe`.
 - Crate : `apivault-proxy` (nom technique), produit : `ApiVault_Proxy`.
 - Édition Rust : 2021.
@@ -224,6 +224,21 @@ Mesure et vue uniquement : aucun plafond, aucun blocage, aucune dépense réelle
 - `X-Request-Id` passe de 8 à **16** caractères hexadécimaux (64 bits).
 - Les clés ne sont pas effacées de la mémoire (`zeroize` absent) : c'est une
   limite assumée, cohérente avec la protection à la frontière de session Windows.
+
+## Correctifs 1.0.3
+
+- Les scripts `Etat`, `Rafraichir` et `Demarrer` vérifient que le processus qui
+  écoute est bien l'exécutable avant d'envoyer le jeton.
+- `Changer-Cle` accepte tout fournisseur `<NOM>_KEY` ; `-Cle` est remplacé par
+  `-CleFichier` / `-CleEnv`.
+- `cles.env.bak` est supprimé après une rotation réussie.
+- Les ACL utilisent le SID courant ; le `.tmp` du coffre est restreint avant le
+  remplacement.
+- `POST /admin/arreter` permet un arrêt propre ; `Stop-Process -Force` n'est plus
+  le premier recours.
+- L'archive utilise des séparateurs `/` et le binaire est compilé avec
+  `--remap-path-prefix` + `strip = true`.
+- `icacls /inheritance:r` retire aussi SYSTEM/Administrateurs : choix assumé.
 
 ## Ce qui n'est PAS implémenté
 

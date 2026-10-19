@@ -8,6 +8,13 @@ if (-not $ecoute) {
     exit 0
 }
 
+try {
+    [void](Tester-EcouteAttendue -Port $port)
+} catch {
+    "Securite : $($_.Exception.Message)"
+    exit 1
+}
+
 "Service : EN MARCHE sur 127.0.0.1:$port (pid $($ecoute[0].OwningProcess))"
 
 try {

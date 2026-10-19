@@ -9,7 +9,15 @@ if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
 }
 
 $port = Lire-Port
-if (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) {
+$ecoute = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+if ($ecoute) {
+    try {
+        [void](Tester-EcouteAttendue -Port $port)
+    } catch {
+        "Refus : $($_.Exception.Message)"
+        exit 1
+    }
     # L'instance active detecte le second lancement et reaffiche sa fenetre.
     Start-Process -FilePath $exe
     "Deja en marche sur 127.0.0.1:$port : fenetre demandee a l'instance active."
