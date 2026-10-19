@@ -1,13 +1,19 @@
 param(
-    [ValidateSet("openrouter", "deepseek", "nvidia")]
-    [string]$Fournisseur = ""
+    # "" autorise : l'utilisateur choisit alors dans la liste.
+    [ValidateSet("", "openrouter", "deepseek", "nvidia")]
+    [string]$Fournisseur = "",
+    # Renseigner -Cle evite toute question : indispensable aux verifications
+    # automatisees, pratique aussi pour un envoi par un autre script.
+    [string]$Cle = ""
 )
 
-$racine = Split-Path -Parent $PSScriptRoot
-$fichier = Join-Path $racine "cles.env"
+. (Join-Path $PSScriptRoot "commun.ps1")
 
-if (-not (Test-Path $fichier)) {
+$fichier = Trouver-FichierCles
+
+if (-not (Test-Path -LiteralPath $fichier -PathType Leaf)) {
     "cles.env introuvable : $fichier"
+    "Lancez l'application une premiere fois : elle cree le fichier chiffre."
     exit 1
 }
 
@@ -33,19 +39,24 @@ $variable = switch ($Fournisseur) {
     "nvidia"     { "NVIDIA_KEY" }
 }
 
-""
-"Nouvelle cle $Fournisseur."
-"Collez-la puis validez (la saisie reste invisible)."
-$secret = Read-Host "Cle" -AsSecureString
+if ($Cle) {
+    # Mode non interactif : la cle arrive en argument.
+    $clair = $Cle.Trim()
+} else {
+    ""
+    "Nouvelle cle $Fournisseur."
+    "Collez-la puis validez (la saisie reste invisible)."
+    $secret = Read-Host "Cle" -AsSecureString
 
-$pointeur = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret)
-try {
-    $clair = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointeur)
-} finally {
-    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointeur)
+    $pointeur = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret)
+    try {
+        $clair = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointeur)
+    } finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointeur)
+    }
+    $clair = $clair.Trim()
 }
 
-$clair = $clair.Trim()
 if ($clair.Length -lt 10) {
     "Cle trop courte : rien n'a ete modifie."
     exit 1
@@ -55,7 +66,29 @@ if ($clair -match "\s") {
     exit 1
 }
 
-$lignes = @(Get-Content -LiteralPath $fichier)
+# --- Lecture du coffre. Si elle echoue, on n'ecrit RIEN. -------------------
+# Le defaut precedent venait d'ici : Get-Content sur le fichier chiffre, puis
+# reecriture en clair sous l'en-tete du coffre, donc coffre corrompu.
+try {
+    $texte = Lire-Clair -Chemin $fichier
+} catch {
+    "Refus : le fichier de cles n'a pas pu etre dechiffre, rien n'a ete ecrit."
+    "  $($_.Exception.Message)"
+    "  Verifiez que le fichier appartient bien a votre compte Windows."
+    exit 1
+}
+
+$lignes = New-Object System.Collections.Generic.List[string]
+foreach ($ligne in ($texte -split "`r?`n")) {
+    # Un BOM eventuel ne doit pas coller au premier nom de variable.
+    $lignes.Add($ligne.TrimStart([char]0xFEFF))
+}
+# Un fichier termine par un saut de ligne produit une derniere entree vide :
+# on la retire pour ne pas accumuler des lignes vides a chaque changement.
+while ($lignes.Count -gt 0 -and $lignes[$lignes.Count - 1] -eq "") {
+    $lignes.RemoveAt($lignes.Count - 1)
+}
+
 $trouve = $false
 for ($i = 0; $i -lt $lignes.Count; $i++) {
     if ($lignes[$i] -match "^$variable=") {
@@ -64,25 +97,36 @@ for ($i = 0; $i -lt $lignes.Count; $i++) {
     }
 }
 if (-not $trouve) {
-    $lignes += "$variable=$clair"
+    $lignes.Add("$variable=$clair")
 }
 
-Set-Content -LiteralPath $fichier -Value $lignes -Encoding ASCII
+$nouveau = ($lignes -join "`r`n") + "`r`n"
+
+try {
+    # Ecriture chiffree, par un .tmp remplace atomiquement. Jamais de clair.
+    Ecrire-Coffre -Chemin $fichier -Texte $nouveau
+} catch {
+    "Echec de l'ecriture du coffre : le fichier d'origine est intact."
+    "  $($_.Exception.Message)"
+    exit 1
+}
+
+# Droits du fichier : il contient la seule copie des cles.
 icacls $fichier /inheritance:r /grant:r "$($env:USERNAME):(F)" | Out-Null
 $clair = $null
 
-"Cle $Fournisseur mise a jour."
+"Cle $Fournisseur mise a jour (coffre chiffre)."
 
 # Redemarrage : la configuration est lue au lancement.
 $tache = Get-ScheduledTask -TaskName "ApiVault_Proxy_Externe" -ErrorAction SilentlyContinue
 Get-Process -Name apivault-proxy -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 800
 
-$exe = Join-Path $racine "src-tauri\target\release\apivault-proxy.exe"
+$exe = Trouver-Executable
 if ($tache) {
     Start-ScheduledTask -TaskName "ApiVault_Proxy_Externe"
     "Service relance (tache planifiee) : la nouvelle cle est active."
-} elseif (Test-Path $exe) {
+} elseif (Test-Path -LiteralPath $exe -PathType Leaf) {
     Start-Process -FilePath $exe -ArgumentList "--discret"
     "Service relance : la nouvelle cle est active."
 } else {
