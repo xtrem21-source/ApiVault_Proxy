@@ -1,5 +1,6 @@
-$racine = Split-Path -Parent $PSScriptRoot
-$port = 3100
+. (Join-Path $PSScriptRoot "commun.ps1")
+
+$port = Lire-Port
 
 $ecoute = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
 if (-not $ecoute) {
@@ -11,23 +12,39 @@ if (-not $ecoute) {
 
 try {
     $sante = Invoke-RestMethod "http://127.0.0.1:$port/health" -TimeoutSec 3
-    "Version : $($sante.version)   uptime : $([math]::Round($sante.uptime_s)) s"
-    "Alias   : $($sante.alias -join ', ')"
+    "Version : $($sante.version)"
 } catch {
     "Health  : KO ($($_.Exception.Message))"
     exit 0
 }
 
-$fichier = Join-Path $racine "cles.env"
-if (Test-Path $fichier) {
-    $ligne = Select-String -Path $fichier -Pattern '^PROXY_MASTER_KEY='
-    if ($ligne) {
-        $jeton = ($ligne.Line -split '=', 2)[1].Trim()
-        try {
-            $modeles = Invoke-RestMethod "http://127.0.0.1:$port/v1/models" -Headers @{ Authorization = "Bearer $jeton" } -TimeoutSec 5
-            "Modeles : $(($modeles.data | ForEach-Object { $_.id }) -join ', ')"
-        } catch {
-            "Modeles : KO ($($_.Exception.Message))"
-        }
+$fichier = Trouver-FichierCles
+if (-not (Test-Path -LiteralPath $fichier -PathType Leaf)) {
+    "Jeton   : aucun fichier de cles ($fichier)"
+    exit 0
+}
+
+try {
+    $jeton = Lire-Jeton -Chemin $fichier
+} catch {
+    "Jeton   : KO (coffre illisible : $($_.Exception.Message))"
+    exit 0
+}
+
+if (-not $jeton) {
+    "Jeton   : introuvable dans $fichier"
+    exit 0
+}
+
+try {
+    $modeles = Invoke-RestMethod "http://127.0.0.1:$port/v1/models" `
+        -Headers @{ Authorization = "Bearer $jeton" } -TimeoutSec 5
+    $alias = @($modeles.data)
+    "Modeles : $($alias.Count) alias"
+    foreach ($a in $alias) {
+        $cibles = @($a.apivault_cibles)
+        "  - $($a.id) : $($cibles.Count) cible(s)"
     }
+} catch {
+    "Modeles : KO ($($_.Exception.Message))"
 }

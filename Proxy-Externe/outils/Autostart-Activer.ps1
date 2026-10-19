@@ -1,12 +1,18 @@
-$racine = Split-Path -Parent $PSScriptRoot
-$exe = Join-Path $racine "src-tauri\target\release\apivault-proxy.exe"
+. (Join-Path $PSScriptRoot "commun.ps1")
 
-if (-not (Test-Path $exe)) {
+$exe = Trouver-Executable
+
+if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
     "Executable introuvable : $exe"
+    "L'archive doit contenir apivault-proxy.exe a cote des fichiers .bat."
     exit 1
 }
 
-$action = New-ScheduledTaskAction -Execute $exe -Argument "--discret" -WorkingDirectory (Split-Path -Parent $exe)
+# Le dossier de travail est celui de l'executable : dans l'archive c'est la
+# racine de la distribution, en developpement le dossier de compilation.
+$dossier = Split-Path -Parent $exe
+
+$action = New-ScheduledTaskAction -Execute $exe -Argument "--discret" -WorkingDirectory $dossier
 $declencheur = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 # Petit temps de latence apres l'ouverture de session (comme la case de l'interface).
 $declencheur.Delay = "PT20S"

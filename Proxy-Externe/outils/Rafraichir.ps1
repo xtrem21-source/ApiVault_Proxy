@@ -1,26 +1,31 @@
-$racine = Split-Path -Parent $PSScriptRoot
-$fichier = Join-Path $racine "cles.env"
+. (Join-Path $PSScriptRoot "commun.ps1")
 
-if (-not (Test-Path $fichier)) {
-    "cles.env introuvable."
+$port = Lire-Port
+$fichier = Trouver-FichierCles
+
+if (-not (Test-Path -LiteralPath $fichier -PathType Leaf)) {
+    "cles.env introuvable : $fichier"
     exit 1
 }
-
-$ligne = Select-String -Path $fichier -Pattern '^PROXY_MASTER_KEY='
-if (-not $ligne) {
-    "Jeton introuvable dans cles.env."
-    exit 1
-}
-
-$jeton = ($ligne.Line -split '=', 2)[1].Trim()
 
 try {
-    $null = Invoke-RestMethod "http://127.0.0.1:3100/admin/rafraichir" `
-        -Method Post `
-        -Headers @{ Authorization = "Bearer $jeton" } `
-        -TimeoutSec 10
-    "Rafraichissement lance : les fournisseurs sont interroges."
+    $jeton = Lire-Jeton -Chemin $fichier
 } catch {
-    "Echec : $($_.Exception.Message)"
+    "Coffre illisible : $($_.Exception.Message)"
+    "Rien n'a ete envoye. Utilisez Changer-Cle.bat pour reposer la cle."
+    exit 1
+}
+
+if (-not $jeton) {
+    "Jeton maitre introuvable dans $fichier"
+    exit 1
+}
+
+try {
+    Invoke-RestMethod "http://127.0.0.1:$port/admin/rafraichir" `
+        -Method Post -Headers @{ Authorization = "Bearer $jeton" } -TimeoutSec 30 | Out-Null
+    "Rafraichissement lance sur 127.0.0.1:$port (le sondage continue en arriere-plan)."
+} catch {
+    "Rafraichissement impossible : $($_.Exception.Message)"
     exit 1
 }
