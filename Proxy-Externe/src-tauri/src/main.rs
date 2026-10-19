@@ -2,6 +2,7 @@
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::{json, Value};
 use tauri::image::Image;
@@ -113,6 +114,41 @@ fn sauver_plafond(service: tauri::State<'_, Arc<Service>>, valeur: u64) -> Resul
         .totaliser(&apivault_proxy::metriques::periode_courante())
         .map_err(|e| format!("Journal de metriques illisible : {}", e))?;
     Ok(apivault_proxy::metriques::totaux_avec_plafond(&totaux, valeur))
+}
+
+/// LOT 9 : autorise ou non le HTTP vers une adresse privee (reseau local,
+/// Tailscale). Applique sans redemarrer.
+#[tauri::command]
+fn sauver_http_local(service: tauri::State<'_, Arc<Service>>, actif: bool) -> Result<Value, String> {
+    let app = &service.inner().app;
+    config::sauver_http_local(&app.cfg.chemin_cles, actif)
+        .map_err(|e| format!("Option non enregistrée : {}", e))?;
+    app.fixer_http_local(actif);
+    app.journaliser(&format!(
+        "HTTP local {}",
+        if actif {
+            "autorisé (adresses privées uniquement)"
+        } else {
+            "refusé"
+        }
+    ));
+    Ok(service.etat_json())
+}
+
+/// LOT 9 : verifie ou non les mises a jour au demarrage.
+#[tauri::command]
+fn sauver_verifier_version(
+    service: tauri::State<'_, Arc<Service>>,
+    actif: bool,
+) -> Result<Value, String> {
+    let app = &service.inner().app;
+    config::sauver_verifier_version(&app.cfg.chemin_cles, actif)
+        .map_err(|e| format!("Option non enregistrée : {}", e))?;
+    app.fixer_verifier_version(actif);
+    if !actif {
+        app.fixer_version_disponible(None);
+    }
+    Ok(service.etat_json())
 }
 
 /// Ajout d'un fournisseur depuis l'interface (P8).
@@ -351,42 +387,82 @@ fn afficher_fenetre(app: &tauri::AppHandle) {
         .build();
 }
 
-/// Notification Windows discrete quand plus aucun modele ne repond.
-/// Le script PowerShell est ecrit une fois dans le dossier de donnees ; son
-/// execution est silencieuse (aucune fenetre) et un echec est sans consequence.
+/// Notification quand plus aucun modele ne repond.
 fn notifier_aucun_modele() {
-    let script = r#"param([string]$Titre, [string]$Message)
-[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null
-$modele = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
-$textes = $modele.GetElementsByTagName("text")
-$textes.Item(0).AppendChild($modele.CreateTextNode($Titre)) > $null
-$textes.Item(1).AppendChild($modele.CreateTextNode($Message)) > $null
-$toast = [Windows.UI.Notifications.ToastNotification]::new($modele)
-$id = "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe"
-[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($id).Show($toast)
-"#;
-    let chemin = config::dossier_donnees().join("notifier.ps1");
-    if std::fs::write(&chemin, script).is_err() {
+    apivault_proxy::notification::bulle(
+        "ApiVault_Proxy",
+        "Aucun modele ne repond. Ouvrez la fenetre pour verifier vos cles et vos adresses.",
+    );
+}
+
+/// LOT 9 : verifie la derniere version publiee sur GitHub.
+///
+/// Seul appel sortant de l'application : lecture seule, sans jeton, sans
+/// aucune donnee envoyee, 5 secondes de delai maximum, echec totalement
+/// silencieux (hors ligne, proxy, quota d'API : on ignore). Desactivable
+/// dans les reglages. Aucun telechargement automatique.
+fn verifier_version(service: Arc<Service>) {
+    if !service.app.verifier_version() {
         return;
     }
-    let chemin = chemin.to_string_lossy().to_string();
-    let mut cmd = std::process::Command::new("powershell");
-    cmd.args([
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-WindowStyle",
-        "Hidden",
-        "-File",
-        &chemin,
-        "-Titre",
-        "ApiVault_Proxy",
-        "-Message",
-        "Aucun modele ne repond. Ouvrez la fenetre pour verifier vos cles et vos adresses.",
-    ]);
-    #[cfg(windows)]
-    cmd.creation_flags(0x08000000);
-    let _ = cmd.spawn();
+    tauri::async_runtime::spawn(async move {
+        let client = match reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .user_agent(concat!("ApiVaultProxy/", env!("CARGO_PKG_VERSION")))
+            .build()
+        {
+            Ok(client) => client,
+            Err(_) => return,
+        };
+        let reponse = match client
+            .get("https://api.github.com/repos/xtrem21-source/ApiVault_Proxy/releases/latest")
+            .send()
+            .await
+        {
+            Ok(reponse) if reponse.status().is_success() => reponse,
+            _ => return,
+        };
+        let corps: Value = match reponse.json().await {
+            Ok(corps) => corps,
+            Err(_) => return,
+        };
+        let distante = match corps.get("tag_name").and_then(|v| v.as_str()) {
+            Some(etiquette) => etiquette.trim_start_matches('v'),
+            None => return,
+        };
+        if version_plus_recente(distante, env!("CARGO_PKG_VERSION")) {
+            service
+                .app
+                .fixer_version_disponible(Some(distante.to_string()));
+            service.app.journaliser(&format!(
+                "version {} disponible (version locale : {})",
+                distante,
+                env!("CARGO_PKG_VERSION")
+            ));
+        }
+    });
+}
+
+/// Compare deux versions `x.y.z`. Toute partie non numerique est ignoree.
+fn version_plus_recente(distante: &str, locale: &str) -> bool {
+    let lire = |v: &str| -> Vec<u32> {
+        v.split('-')
+            .next()
+            .unwrap_or("")
+            .split('.')
+            .map(|partie| partie.parse::<u32>().unwrap_or(0))
+            .collect()
+    };
+    let a = lire(distante);
+    let b = lire(locale);
+    for i in 0..a.len().max(b.len()) {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        if x != y {
+            return x > y;
+        }
+    }
+    false
 }
 
 /// Couleur de l'icone = etat reel : vert joignable, orange en service mais
@@ -513,6 +589,7 @@ fn main() {
         )),
     }
     let service = Service::nouveau(port, jeton, etat_partage);
+    verifier_version(Arc::clone(&service));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -541,6 +618,8 @@ fn main() {
             diagnostic,
             metriques,
             sauver_plafond,
+            sauver_http_local,
+            sauver_verifier_version,
             ajouter_fournisseur,
             tester_cle,
             quitter

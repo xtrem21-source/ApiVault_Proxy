@@ -102,6 +102,20 @@ pub fn periode_courante() -> String {
     periode_de(&Local::now())
 }
 
+/// Premier jour du mois suivant une periode `AAAA-MM`, au format `AAAA-MM-JJ`.
+/// Sert aux messages de plafond : dire quand le quota repart.
+pub fn debut_mois_suivant(periode: &str) -> String {
+    let mut morceaux = periode.split('-');
+    let annee: i32 = morceaux.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let mois: u32 = morceaux.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let (annee, mois) = if mois >= 12 {
+        (annee + 1, 1)
+    } else {
+        (annee, mois + 1)
+    };
+    format!("{:04}-{:02}-01", annee, mois)
+}
+
 /// Chemin du fichier d'une periode.
 pub fn chemin_periode(dossier: &Path, periode: &str) -> PathBuf {
     dossier.join(format!("{}-{}.jsonl", PREFIXE_FICHIER, periode))

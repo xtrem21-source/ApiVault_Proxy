@@ -81,6 +81,14 @@ pub struct Config {
     pub perso: Vec<Perso>,
     /// Plafond mensuel en tokens d'entree + sortie (LOT 6). 0 = desactive.
     pub plafond_mensuel: u64,
+    /// Port memorise apres une bascule (le port demande etait occupe).
+    /// 0 = aucune bascule connue.
+    pub port_secours: u16,
+    /// Autorise `http://` vers une adresse privee (reseau local, Tailscale).
+    /// Desactive par defaut : sans chiffrement, la cle circule en clair.
+    pub autoriser_http_local: bool,
+    /// Verifie au demarrage si une version plus recente existe sur GitHub.
+    pub verifier_version: bool,
 }
 
 impl Config {
@@ -142,6 +150,18 @@ impl Config {
             modele_prefere,
             perso,
             plafond_mensuel: plafond_lu(&valeurs),
+            port_secours: valeurs
+                .get("PROXY_PORT_SECOURS")
+                .and_then(|v| v.trim().parse::<u16>().ok())
+                .unwrap_or(0),
+            autoriser_http_local: valeurs
+                .get("PROXY_HTTP_LOCAL")
+                .map(|v| v.trim() == "1")
+                .unwrap_or(false),
+            verifier_version: valeurs
+                .get("PROXY_VERIFIER_VERSION")
+                .map(|v| v.trim() != "0")
+                .unwrap_or(true),
         }
     }
 
@@ -571,6 +591,20 @@ pub fn plafond_depuis_fichier(chemin: &Path) -> u64 {
 /// Enregistre le plafond mensuel dans le fichier de cles, donc chiffre.
 pub fn sauver_plafond(chemin: &Path, valeur: u64) -> std::io::Result<()> {
     ecrire_variable(chemin, "PROXY_PLAFOND_MENSUEL", &valeur.to_string())
+}
+
+/// LOT 9 : autorise ou non le HTTP vers une adresse privee.
+pub fn sauver_http_local(chemin: &Path, actif: bool) -> std::io::Result<()> {
+    ecrire_variable(chemin, "PROXY_HTTP_LOCAL", if actif { "1" } else { "0" })
+}
+
+/// LOT 9 : verifie ou non les mises a jour au demarrage.
+pub fn sauver_verifier_version(chemin: &Path, actif: bool) -> std::io::Result<()> {
+    ecrire_variable(
+        chemin,
+        "PROXY_VERIFIER_VERSION",
+        if actif { "1" } else { "0" },
+    )
 }
 
 /// Identique a `ecrire_variable`, mais permet de ne pas ecraser la sauvegarde

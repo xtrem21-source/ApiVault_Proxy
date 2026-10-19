@@ -1,10 +1,35 @@
-ApiVault_Proxy - version 1.0.2
+ApiVault_Proxy - version 1.0.4
 ==============================
 
 English version: README.en.txt
 
 Passerelle locale compatible OpenAI.
 Un seul executable autonome : ni Python, ni Docker, ni Node.
+
+Installation
+------------
+Placez ce dossier dans un emplacement definitif (Documents, Programmes) : le
+demarrage automatique retient le chemin de l'executable. Vos donnees, elles,
+vivent dans %APPDATA%\ApiVault_Proxy (coffre chiffre, journal des metriques).
+
+Port occupe
+-----------
+Si 3100 est pris, la passerelle bascule sur 3101, 3102... et retient le port
+choisi. Une bulle Windows previent et l'adresse est rappelee dans la fenetre :
+pensez a la mettre a jour dans votre client.
+
+Compteur
+--------
+Des tokens, jamais des euros : la facturation reste chez le fournisseur, seul
+a connaitre ses prix. Le refus de plafond indique la consommation, la limite et
+la date de reinitialisation.
+
+Fournisseurs locaux
+-------------------
+Une option, decochee par defaut, autorise le HTTP non chiffre vers une adresse
+privee (10.x, 172.16-31.x, 192.168.x, 100.64.x pour Tailscale). Jamais vers
+Internet : sans chiffrement, la cle circulerait en clair. https:// reste
+accepte partout ; pour un Ollama distant, preferez un tunnel SSH ou Tailscale.
 
 Voyant d'etat
 -------------

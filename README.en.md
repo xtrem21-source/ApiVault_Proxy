@@ -48,11 +48,22 @@ No Docker, no Python, no Node, no system service. One executable.
   survives restarts, and nothing is paid for in a loop.
 - **Token counter** — input, output and cache, per request, aggregated by day,
   week and month. A monthly append-only journal (`metriques-AAAA-MM.jsonl`).
+  Tokens, **never euros**: billing stays with the provider, the only one that
+  knows its prices. A figure computed here would only be a guess.
 - **Monthly cap** — checked **before** the provider call, rejected with `429`
-  `plafond_atteint`, alert at 80%. Disabled by default.
+  `plafond_atteint`, alert at 80%. Disabled by default. The refusal says how much
+  was used, out of how much, and when the quota resets.
+- **Port in use** — if 3100 is taken, the gateway moves to 3101, 3102… and keeps
+  the port it picked. A Windows notification warns you, and the address is
+  repeated in the window so no client is left pointing nowhere.
+- **Local providers** — an option, off by default, allowing unencrypted `http://`
+  to a private address (local network, Tailscale). Never to the internet: without
+  encryption the key would travel in clear text.
 - **FR / EN interface**, tooltips, start with Windows, notification icon whose
   colour follows the real service state.
-- **Nothing leaves the machine** — the service listens only on the loopback.
+- **Nothing leaves the machine** — the service listens only on the loopback. The
+  only outgoing call is the optional version check, with no token and no data
+  sent.
 
 ---
 

@@ -447,6 +447,23 @@
 
   <section class="carte" style="margin-top:12px">
     <div class="entete-carte">
+      <h2 data-i18n="options_titre">Réseau et mises à jour</h2>
+    </div>
+    <div class="ligne">
+      <label class="cle" for="http-local" data-i18n="http_local_label">Autoriser le HTTP vers mon réseau local</label>
+      <input id="http-local" type="checkbox" />
+    </div>
+    <div class="astuce" data-i18n="http_local_note">Décoché par défaut. Une fois coché, le HTTP non chiffré est accepté vers une adresse privée uniquement (10.x, 172.16 à 31.x, 192.168.x, 100.64.x pour Tailscale). Jamais vers Internet : sans chiffrement, votre clé circulerait en clair. La règle s'applique aussi au bouton « tester ».</div>
+    <div class="ligne">
+      <label class="cle" for="verif-version" data-i18n="verif_version_label">Vérifier les mises à jour au démarrage</label>
+      <input id="verif-version" type="checkbox" />
+    </div>
+    <div class="astuce" data-i18n="verif_version_note">Un seul appel sortant : lecture de la dernière version publiée sur GitHub, sans jeton et sans envoyer aucune donnée. Cinq secondes au maximum, et un échec ne change rien.</div>
+    <div class="astuce" id="version-info" style="display:none"></div>
+  </section>
+
+  <section class="carte" style="margin-top:12px">
+    <div class="entete-carte">
       <h2 data-i18n="alias_titre">Alias et état des cibles</h2>
       <button id="btn-rafraichir" class="mini" data-tip="tip_rafraichir">
         <svg class="icone" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -719,6 +736,14 @@
       plafond_erreur: "Plafond non enregistré : {message}",
       plafond_bandeau_alerte: "Plafond mensuel : {p} % utilisés. Les requêtes passent encore, mais le plafond approche.",
       plafond_bandeau_atteint: "Plafond mensuel atteint ({p} %) : les nouvelles requêtes sont refusées avec un code 429.",
+      port_bascule: "Le port {demande} était occupé : le service tourne sur le port {actif}. Mettez à jour l'adresse dans votre client — elle est rappelée ci-dessous.",
+      options_titre: "Réseau et mises à jour",
+      http_local_label: "Autoriser le HTTP vers mon réseau local",
+      http_local_note: "Décoché par défaut. Une fois coché, le HTTP non chiffré est accepté vers une adresse privée uniquement (10.x, 172.16 à 31.x, 192.168.x, 100.64.x pour Tailscale). Jamais vers Internet : sans chiffrement, votre clé circulerait en clair. La règle s'applique aussi au bouton « tester ».",
+      http_local_erreur: "Option non enregistrée : {message}",
+      verif_version_label: "Vérifier les mises à jour au démarrage",
+      verif_version_note: "Un seul appel sortant : lecture de la dernière version publiée sur GitHub, sans jeton et sans envoyer aucune donnée. Cinq secondes au maximum, et un échec ne change rien.",
+      version_dispo: "Version {v} disponible sur GitHub : github.com/xtrem21-source/ApiVault_Proxy/releases",
       tip_plafond: "Contrôlé avant chaque appel au fournisseur, sur les totaux du mois en cours. Un journal illisible ne bloque jamais.",
       tip_plafond_enregistrer: "Écrit le réglage dans le fichier de clés, donc chiffré au repos.",
     },
@@ -927,6 +952,14 @@
       plafond_erreur: "Cap not saved: {message}",
       plafond_bandeau_alerte: "Monthly cap: {p}% used. Requests still go through, but the cap is close.",
       plafond_bandeau_atteint: "Monthly cap reached ({p}%): new requests are refused with a 429 code.",
+      port_bascule: "Port {demande} was busy: the service is running on port {actif}. Update the address in your client — it is repeated below.",
+      options_titre: "Network and updates",
+      http_local_label: "Allow HTTP to my local network",
+      http_local_note: "Off by default. Once enabled, unencrypted HTTP is accepted to a private address only (10.x, 172.16 to 31.x, 192.168.x, 100.64.x for Tailscale). Never to the internet: without encryption your key would travel in clear text. The rule also applies to the \"test\" button.",
+      http_local_erreur: "Option not saved: {message}",
+      verif_version_label: "Check for updates at startup",
+      verif_version_note: "A single outgoing call: read the latest version published on GitHub, no token, no data sent. Five seconds maximum, and a failure changes nothing.",
+      version_dispo: "Version {v} available on GitHub: github.com/xtrem21-source/ApiVault_Proxy/releases",
       tip_plafond: "Checked before every provider call, on the current month's totals. An unreadable log never blocks.",
       tip_plafond_enregistrer: "Writes the setting to the key file, so it is encrypted at rest.",
     },
@@ -1595,9 +1628,33 @@ function annulerConfirmationEffacement() {
             ? t("port_indisponible", { port: e.port })
             : e.erreur);
         $("alerte").classList.add("visible");
+      } else if (e.port_bascule) {
+        // Bascule de port : l'adresse affichee a change, il faut le dire
+        // explicitement sinon les clients configures pointent dans le vide.
+        $("alerte").textContent = t("port_bascule", { demande: e.port_demande, actif: e.port });
+        $("alerte").classList.add("visible");
       } else {
         $("alerte").classList.remove("visible");
         $("alerte").textContent = "";
+      }
+
+      // Options persistantes : cochees selon l'etat enregistre.
+      const chkHttp = $("http-local");
+      if (chkHttp && document.activeElement !== chkHttp) chkHttp.checked = !!e.http_local;
+      const chkVerif = $("verif-version");
+      if (chkVerif && document.activeElement !== chkVerif) chkVerif.checked = !!e.verifier_version;
+      const infoVersion = $("version-info");
+      if (infoVersion) {
+        if (e.version_disponible) {
+          // La version vient d'Internet : on n'injecte que des chiffres et des
+          // points, jamais de HTML.
+          const propre = String(e.version_disponible).replace(/[^0-9.]/g, "");
+          infoVersion.textContent = t("version_dispo", { v: propre });
+          infoVersion.style.display = "";
+        } else {
+          infoVersion.textContent = "";
+          infoVersion.style.display = "none";
+        }
       }
 
       rendreAlias(e.alias);
@@ -2059,6 +2116,28 @@ function annulerConfirmationEffacement() {
     }
     bouton.disabled = false;
   });
+
+  // Options persistantes (LOT 9) : la case est enregistree puis l'etat est
+  // relu depuis le service, jamais suppose.
+  const basculerOption = (id, commande) => {
+    const el = $(id);
+    if (!el) return;
+    el.addEventListener("change", async () => {
+      el.disabled = true;
+      try {
+        await invoke(commande, { actif: el.checked });
+        await rafraichir();
+      } catch (e) {
+        el.checked = !el.checked;
+        const info = $("version-info");
+        info.style.display = "";
+        info.textContent = t("http_local_erreur", { message: String(e) });
+      }
+      el.disabled = false;
+    });
+  };
+  basculerOption("http-local", "sauver_http_local");
+  basculerOption("verif-version", "sauver_verifier_version");
 
   $("btn-conso").addEventListener("click", async () => {
     const bouton = $("btn-conso");

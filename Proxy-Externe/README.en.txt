@@ -1,10 +1,34 @@
-ApiVault_Proxy - version 1.0.2
+ApiVault_Proxy - version 1.0.4
 ==============================
 
 French version: LISEZ-MOI.txt | English
 
 Local OpenAI-compatible gateway.
 One standalone executable: no Python, no Docker, no Node.
+
+Installation
+------------
+Keep this folder in a permanent place (Documents, Programs): automatic start
+remembers the executable path. Your data lives in %APPDATA%\ApiVault_Proxy
+(encrypted vault, metrics journal).
+
+Port in use
+-----------
+If 3100 is taken, the gateway moves to 3101, 3102... and keeps the port it
+picked. A Windows notification warns you, and the address is repeated in the
+window: update it in your client.
+
+Counter
+-------
+Tokens, never euros: billing stays with the provider, the only one that knows
+its prices. A cap refusal states the usage, the limit and the reset date.
+
+Local providers
+---------------
+An option, off by default, allows unencrypted HTTP to a private address (10.x,
+172.16-31.x, 192.168.x, 100.64.x for Tailscale). Never to the internet: without
+encryption the key would travel in clear text. https:// is still accepted
+everywhere; for a remote Ollama, prefer an SSH tunnel or Tailscale.
 
 Status light
 ------------

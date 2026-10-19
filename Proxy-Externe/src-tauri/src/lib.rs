@@ -6,5 +6,6 @@
 pub mod coffre;
 pub mod config;
 pub mod metriques;
+pub mod notification;
 pub mod pool;
 pub mod serveur;

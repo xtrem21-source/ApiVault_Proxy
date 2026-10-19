@@ -181,9 +181,9 @@ async fn b2_hote_etranger_refuse_et_hote_local_accepte() {
 }
 
 #[tokio::test]
-async fn a1_port_occupe_message_explicite_et_cause_dans_le_journal() {
+async fn a1_port_occupe_bascule_vers_le_port_suivant_et_le_memorise() {
     let _garde = VERROU.lock().await;
-    // Un ecouteur factice garde le port : la passerelle ne peut pas s'y lier.
+    // Un ecouteur factice garde le port : la passerelle doit basculer.
     let ecoute = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = ecoute.local_addr().unwrap().port();
     let (service, dossier, appdata_original) = preparer("port", port);
@@ -197,40 +197,42 @@ async fn a1_port_occupe_message_explicite_et_cause_dans_le_journal() {
 
     let debut = Instant::now();
     let mut etat = banc.service.etat_json();
-    while etat["erreur"].is_null() && debut.elapsed() < Duration::from_secs(5) {
+    while !etat["actif"].as_bool().unwrap_or(false) && debut.elapsed() < Duration::from_secs(5) {
         tokio::time::sleep(Duration::from_millis(50)).await;
         etat = banc.service.etat_json();
     }
-    assert!(!etat["actif"].as_bool().unwrap_or(true));
-    assert_eq!(
-        etat["erreur_code"], "port_occupe",
-        "le code doit permettre a l'interface d'afficher un message actionnable : {etat}"
-    );
-    let message = etat["erreur"].as_str().unwrap_or_default();
     assert!(
-        message.contains(&port.to_string()) && message.contains("deja utilise"),
-        "message explicite attendu, obtenu : {message}"
+        etat["actif"].as_bool().unwrap_or(false),
+        "le service doit demarrer malgre le port occupe : {etat}"
+    );
+    assert_eq!(
+        etat["port_demande"], port,
+        "le port demande reste visible pour l'interface : {etat}"
+    );
+    assert!(
+        etat["port_bascule"].as_bool().unwrap_or(false),
+        "l'interface doit savoir qu'il y a eu bascule : {etat}"
+    );
+    let actif = etat["port"].as_u64().unwrap_or(0) as u16;
+    assert!(
+        actif > port && actif <= port.saturating_add(9),
+        "le port de secours doit etre un voisin immediat, obtenu {actif}"
     );
 
+    // Le journal doit expliquer la bascule, pas seulement l'echouer.
     let journal = banc.service.app.lignes_journal().join("\n");
     assert!(
-        journal.contains("os error"),
-        "la cause technique doit rester dans le journal : {journal}"
+        journal.contains("occupe") && journal.contains(&actif.to_string()),
+        "le journal doit nommer le port occupe et celui retenu : {journal}"
     );
-    // LOT 7 bis, point 6 : le journal doit aussi porter le message actionnable,
-    // pas seulement la cause technique (audit : « dans l'interface et dans le
-    // journal »). Un utilisateur qui lit le journal doit savoir quoi faire.
-    assert!(
-        journal.contains("deja utilise"),
-        "le journal doit dire que le port est deja utilise : {journal}"
+
+    // La bascule est memorisee : au prochain demarrage, les clients gardent
+    // la meme adresse.
+    let relu = Config::charger();
+    assert_eq!(
+        relu.port_secours, actif,
+        "le port de secours doit etre enregistre dans le coffre"
     );
-    assert!(
-        journal.contains(&port.to_string()),
-        "le journal doit nommer le port occupe : {journal}"
-    );
-    assert!(
-        journal.contains("relance"),
-        "le journal doit dire quoi faire (relancer) : {journal}"
-    );
+
     drop(ecoute);
 }

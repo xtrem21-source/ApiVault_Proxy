@@ -6,7 +6,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -122,6 +122,13 @@ pub struct AppState {
     plafond_utilise: Mutex<Option<(String, u64)>>,
     /// Canal d'arret propre, partage avec `Service` pour `/admin/arreter`.
     arret: Mutex<Option<watch::Sender<bool>>>,
+    /// Autorise `http://` vers une adresse privee (reseau local, Tailscale).
+    /// Modifiable depuis l'interface sans redemarrage.
+    http_local: AtomicBool,
+    /// Verifie au demarrage si une version plus recente existe sur GitHub.
+    verifier_version: AtomicBool,
+    /// Derniere version publiee vue sur GitHub (`None` = inconnue ou a jour).
+    version_disponible: Mutex<Option<String>>,
 }
 
 /// Client des appels non streames (300 s de garde-fou).
@@ -161,6 +168,8 @@ impl AppState {
         let preference_modele = cfg.modele_prefere.clone();
         let cfg_perso = cfg.perso.clone();
         let plafond = cfg.plafond_mensuel;
+        let http_local = cfg.autoriser_http_local;
+        let verifier_version = cfg.verifier_version;
         let adresses: HashMap<String, Vec<String>> = cfg
             .fournisseurs
             .iter()
@@ -188,6 +197,38 @@ impl AppState {
             plafond: AtomicU64::new(plafond),
             plafond_utilise: Mutex::new(None),
             arret: Mutex::new(None),
+            http_local: AtomicBool::new(http_local),
+            verifier_version: AtomicBool::new(verifier_version),
+            version_disponible: Mutex::new(None),
+        }
+    }
+
+    /// `http://` vers une adresse privee est-il autorise ?
+    pub fn http_local(&self) -> bool {
+        self.http_local.load(Ordering::Relaxed)
+    }
+
+    pub fn fixer_http_local(&self, actif: bool) {
+        self.http_local.store(actif, Ordering::Relaxed);
+    }
+
+    /// La verification de version est-elle active ?
+    pub fn verifier_version(&self) -> bool {
+        self.verifier_version.load(Ordering::Relaxed)
+    }
+
+    pub fn fixer_verifier_version(&self, actif: bool) {
+        self.verifier_version.store(actif, Ordering::Relaxed);
+    }
+
+    /// Version publique plus recente que celle en cours, si elle est connue.
+    pub fn version_disponible(&self) -> Option<String> {
+        self.version_disponible.lock().ok().and_then(|v| v.clone())
+    }
+
+    pub fn fixer_version_disponible(&self, version: Option<String>) {
+        if let Ok(mut v) = self.version_disponible.lock() {
+            *v = version;
         }
     }
 
@@ -486,9 +527,9 @@ impl AppState {
             return Err("Au moins une adresse est necessaire.".to_string());
         }
         for url in &urls {
-            if !adresse_upstream_valide(url) {
+            if !adresse_upstream_valide(url, self.http_local()) {
                 return Err(format!(
-                    "Adresse invalide : '{}' (https:// requis ; http:// accepte uniquement vers 127.0.0.1/localhost)",
+                    "Adresse invalide : '{}'. https:// est accepté partout ; http:// seulement vers 127.0.0.1, ou vers une adresse privée si l'option « autoriser le HTTP local » est activée.",
                     url
                 ));
             }
@@ -540,9 +581,9 @@ impl AppState {
             return Err("Une adresse est necessaire.".to_string());
         }
         for u in &urls {
-            if !adresse_upstream_valide(u) {
+            if !adresse_upstream_valide(u, self.http_local()) {
                 return Err(format!(
-                    "Adresse invalide : '{}' (https:// requis ; http:// accepte uniquement vers 127.0.0.1/localhost)",
+                    "Adresse invalide : '{}'. https:// est accepté partout ; http:// seulement vers 127.0.0.1, ou vers une adresse privée si l'option « autoriser le HTTP local » est activée.",
                     u
                 ));
             }
@@ -617,6 +658,16 @@ impl AppState {
             format!("{}/models", base)
         };
         let debut = Instant::now();
+        // Jamais de cle envoyee vers une adresse refusee par la politique
+        // d'adresses (http:// en clair vers Internet, par exemple).
+        if !adresse_upstream_valide(&cible, self.http_local()) {
+            return json!({
+                "ok": false,
+                "statut": 0,
+                "erreur": "Adresse refusée : https:// est accepté partout ; http:// seulement vers 127.0.0.1, ou vers une adresse privée si l'option « autoriser le HTTP local » est activée.",
+                "duree_ms": 0,
+            });
+        }
         let reponse = self
             .http
             .get(&cible)
@@ -1013,12 +1064,21 @@ impl AppState {
             plafond: AtomicU64::new(0),
             plafond_utilise: Mutex::new(None),
             arret: Mutex::new(None),
+            http_local: AtomicBool::new(false),
+            verifier_version: AtomicBool::new(false),
+            version_disponible: Mutex::new(None),
         }
     }
 }
 
 pub struct Service {
+    /// Port demande par la configuration (celui que l'utilisateur a choisi).
     pub port: u16,
+    /// Port reellement ecoute. Egal a `port`, sauf si celui-ci etait occupe
+    /// au demarrage : on bascule alors sur un port voisin et on le retient.
+    pub port_actif: AtomicU16,
+    /// Port de secours memorise lors d'un demarrage precedent (0 = aucun).
+    pub port_secours: u16,
     pub jeton: String,
     pub app: Arc<AppState>,
     pub actif: AtomicBool,
@@ -1033,8 +1093,11 @@ pub struct Service {
 
 impl Service {
     pub fn nouveau(port: u16, jeton: String, app: Arc<AppState>) -> Arc<Service> {
+        let port_secours = app.cfg.port_secours;
         let service = Arc::new(Service {
             port,
+            port_actif: AtomicU16::new(port),
+            port_secours,
             jeton,
             app,
             actif: AtomicBool::new(false),
@@ -1079,9 +1142,68 @@ impl Service {
 
         let srv = Arc::clone(self);
         tauri::async_runtime::spawn(async move {
-            let adresse = SocketAddr::from(([127, 0, 0, 1], srv.port));
-            match tokio::net::TcpListener::bind(adresse).await {
-                Ok(ecoute) => {
+            // Choix du port : le port demande d'abord, puis le port de secours
+            // retenu lors d'un demarrage precedent, puis les ports voisins.
+            // Une bascule est memorisee : les clients configures continuent de
+            // fonctionner au demarrage suivant.
+            let mut candidats: Vec<u16> = vec![srv.port];
+            if srv.port_secours != 0 && srv.port_secours != srv.port {
+                candidats.push(srv.port_secours);
+            }
+            let fin = srv.port.saturating_add(9);
+            let mut suivant = srv.port;
+            while suivant < fin {
+                suivant += 1;
+                if !candidats.contains(&suivant) {
+                    candidats.push(suivant);
+                }
+            }
+
+            let mut choix: Option<(tokio::net::TcpListener, u16)> = None;
+            let mut derniere: Option<std::io::Error> = None;
+            for candidat in candidats {
+                let adresse = SocketAddr::from(([127, 0, 0, 1], candidat));
+                match tokio::net::TcpListener::bind(adresse).await {
+                    Ok(ecoute) => {
+                        choix = Some((ecoute, candidat));
+                        break;
+                    }
+                    Err(e) => {
+                        let inutilisable = e.kind() != std::io::ErrorKind::AddrInUse
+                            && e.kind() != std::io::ErrorKind::PermissionDenied;
+                        derniere = Some(e);
+                        if inutilisable {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            match choix {
+                Some((ecoute, port_actif)) => {
+                    srv.port_actif.store(port_actif, Ordering::SeqCst);
+                    if port_actif != srv.port {
+                        // Memoriser la bascule pour que les clients gardent la
+                        // meme adresse au prochain demarrage.
+                        if port_actif != srv.port_secours {
+                            let _ = crate::config::ecrire_variable(
+                                &srv.app.cfg.chemin_cles,
+                                "PROXY_PORT_SECOURS",
+                                &port_actif.to_string(),
+                            );
+                        }
+                        srv.app.journaliser(&format!(
+                            "port {} occupe : demarrage sur le port {} (memorise pour les prochains demarrages)",
+                            srv.port, port_actif
+                        ));
+                        crate::notification::bulle(
+                            "ApiVault Proxy",
+                            &format!(
+                                "Le port {} etait occupe. Le service tourne sur le port {}. Mettez a jour l'adresse dans votre client.",
+                                srv.port, port_actif
+                            ),
+                        );
+                    }
                     srv.actif.store(true, Ordering::SeqCst);
                     if let Ok(mut d) = srv.depuis.lock() {
                         *d = Some(Instant::now());
@@ -1089,7 +1211,7 @@ impl Service {
                     srv.app.journaliser(&format!(
                         "demarrage serveur : {} ms (en ecoute sur http://127.0.0.1:{} - {} alias)",
                         ms_depuis_demarrage(),
-                        srv.port,
+                        port_actif,
                         srv.app.cfg.alias.len()
                     ));
 
@@ -1106,23 +1228,30 @@ impl Service {
                     }
                     srv.app.journaliser("service arrete");
                 }
-                Err(e) => {
+                None => {
                     srv.actif.store(false, Ordering::SeqCst);
+                    let e = derniere.unwrap_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::AddrInUse,
+                            "aucun port disponible",
+                        )
+                    });
                     // Message affiche : explicite et actionnable, jamais la
                     // seule trace technique.
                     let (code, message) = if e.kind() == std::io::ErrorKind::AddrInUse {
                         (
                             "port_occupe",
                             format!(
-                                "Le port {} est deja utilise par une autre application. Ferme-la, puis relance ApiVault Proxy.",
-                                srv.port
+                                "Les ports {} à {} sont tous utilisés. Fermez l'application qui les occupe, puis relancez ApiVault Proxy.",
+                                srv.port,
+                                srv.port.saturating_add(9)
                             ),
                         )
                     } else {
                         (
                             "port_indisponible",
                             format!(
-                                "Le service n'a pas pu demarrer sur le port {}. La cause technique est dans le journal.",
+                                "Le service n'a pas pu démarrer sur le port {}. La cause technique est dans le journal.",
                                 srv.port
                             ),
                         )
@@ -1174,10 +1303,15 @@ impl Service {
             self.app.journaliser("interface connectee");
         }
         let alias = self.app.alias_effectifs();
+        let port_actif = self.port_actif.load(Ordering::SeqCst);
         json!({
             "modele_prefere": self.app.modele_prefere(),
             "actif": self.actif.load(Ordering::SeqCst),
-            "port": self.port,
+            // `port` est le port reellement ecoute ; `port_demande` celui de la
+            // configuration. Les deux different apres une bascule.
+            "port": port_actif,
+            "port_demande": self.port,
+            "port_bascule": port_actif != self.port,
             "jeton": self.jeton,
             "jeton_masque": masquer(&self.jeton),
             "erreur": self.erreur.lock().ok().and_then(|e| e.clone()),
@@ -1197,6 +1331,9 @@ impl Service {
             "derniere_verification_s": self.app.pool.derniere_verification_s(),
             "demarrage_s": self.app.debut.elapsed().as_secs(),
             "chemin_cles": self.app.cfg.chemin_cles.display().to_string(),
+            "http_local": self.app.http_local(),
+            "verifier_version": self.app.verifier_version(),
+            "version_disponible": self.app.version_disponible(),
             "alias": alias.iter().map(|a| json!({
                 "nom": a.nom,
                 "cibles": self.app.vue_redigee(a),
@@ -1230,7 +1367,7 @@ impl Service {
     /// ressemble a un secret connu est remplace par `***`.
     pub fn diagnostic_json(&self) -> Value {
         self.app.diagnostic_json(
-            self.port,
+            self.port_actif.load(Ordering::SeqCst),
             &self.jeton,
             self.actif.load(Ordering::SeqCst),
             Some(self.app.debut.elapsed().as_secs()),
@@ -1286,18 +1423,48 @@ fn modeles_par_fournisseur(alias: &[Alias], nom: &str) -> Vec<(String, Vec<Strin
     par_modele
 }
 
-fn adresse_upstream_valide(url: &str) -> bool {
+fn adresse_upstream_valide(url: &str, http_local: bool) -> bool {
     let Ok(parsed) = reqwest::Url::parse(url) else {
         return false;
     };
     match parsed.scheme() {
         "https" => true,
-        // HTTP n'est tolere que vers la boucle locale (tests, faux fournisseur).
-        "http" => matches!(
-            parsed.host_str(),
-            Some("127.0.0.1") | Some("localhost") | Some("::1") | Some("[::1]")
-        ),
+        // HTTP en clair : jamais vers Internet (la cle circule en clair).
+        // Boucle locale toujours acceptee ; adresse privee seulement si
+        // l'utilisateur a coche « autoriser le HTTP local ».
+        "http" => match parsed.host_str() {
+            None => false,
+            Some(hote) => {
+                let hote = hote.trim_matches(|c| c == '[' || c == ']');
+                if hote == "localhost" {
+                    return true;
+                }
+                // Un nom, meme `.local`, n'est jamais accepte : on ne peut pas
+                // garantir vers quoi il pointe au moment de la connexion.
+                let Ok(ip) = hote.parse::<std::net::IpAddr>() else {
+                    return false;
+                };
+                ip.is_loopback() || (http_local && adresse_privee(ip))
+            }
+        },
         _ => false,
+    }
+}
+
+/// Adresses considerees comme « reseau local » : RFC 1918, lien local,
+/// 100.64.0.0/10 (CGNAT, utilise par Tailscale), ULA et lien local IPv6.
+fn adresse_privee(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let octets = v4.octets();
+            v4.is_private()
+                || v4.is_link_local()
+                || (octets[0] == 100 && (64..128).contains(&octets[1]))
+        }
+        std::net::IpAddr::V6(v6) => {
+            let segments = v6.segments();
+            (segments[0] & 0xfe00) == 0xfc00 || (segments[0] & 0xffc0) == 0xfe80
+        }
     }
 }
 
@@ -1964,14 +2131,7 @@ async fn chat_interne(
                             utilise, plafond, periode
                         ),
                     );
-                    return erreur_json(
-                        StatusCode::TOO_MANY_REQUESTS,
-                        &format!(
-                            "Plafond mensuel atteint : {} tokens utilises sur {} pour la periode {}. La requete n'a pas ete envoyee au fournisseur.",
-                            utilise, plafond, periode
-                        ),
-                        "plafond_atteint",
-                    );
+                    return erreur_plafond(utilise, plafond, &periode);
                 }
             }
             // Fail-open assume : on sert la requete et le journal dit pourquoi.
@@ -2653,6 +2813,30 @@ fn erreur_json(statut: StatusCode, message: &str, code: &str) -> Response {
     )
 }
 
+/// Refus de plafond : le corps dit combien, sur combien, et quand ca repart.
+/// `insufficient_quota` est le type que les clients compatibles OpenAI
+/// comprennent ; le message reste lisible pour un humain.
+fn erreur_plafond(utilise: u64, plafond: u64, periode: &str) -> Response {
+    let reinitialisation = crate::metriques::debut_mois_suivant(periode);
+    json_reponse(
+        StatusCode::TOO_MANY_REQUESTS,
+        json!({
+            "error": {
+                "message": format!(
+                    "Plafond mensuel atteint : {} tokens utilisés sur {} pour {}. Réinitialisation le {}. La requête n'a pas été envoyée au fournisseur.",
+                    utilise, plafond, periode, reinitialisation
+                ),
+                "type": "insufficient_quota",
+                "code": "plafond_atteint",
+                "utilise": utilise,
+                "plafond": plafond,
+                "periode": periode,
+                "reinitialisation": reinitialisation,
+            }
+        }),
+    )
+}
+
 fn erreur_jeton() -> Response {
     let mut reponse = erreur_json(
         StatusCode::UNAUTHORIZED,
@@ -3051,6 +3235,9 @@ mod tests {
             modele_prefere: None,
             perso: Vec::new(),
             plafond_mensuel: 0,
+            port_secours: 0,
+            autoriser_http_local: false,
+            verifier_version: false,
         };
         let app = AppState::pour_test(cfg);
         // Une erreur amont peut recopier une cle : le diagnostic doit la masquer.
@@ -3107,6 +3294,9 @@ mod tests {
             modele_prefere: None,
             perso: Vec::new(),
             plafond_mensuel: 0,
+            port_secours: 0,
+            autoriser_http_local: false,
+            verifier_version: false,
         };
         let app = std::sync::Arc::new(AppState::pour_test(cfg));
         app.ajouter_fournisseur(
@@ -3257,6 +3447,9 @@ mod tests {
             modele_prefere: None,
             perso: Vec::new(),
             plafond_mensuel: 0,
+            port_secours: 0,
+            autoriser_http_local: false,
+            verifier_version: false,
         };
         let app = AppState::pour_test(cfg);
         let cible = Cible {

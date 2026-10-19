@@ -48,11 +48,22 @@ Pas de Docker, pas de Python, pas de Node, pas de service système. Un exécutab
   survit au redémarrage, et rien n'est payé inutilement en boucle.
 - **Compteur de tokens** — entrée, sortie et cache, par requête, agrégés par jour,
   semaine et mois. Un journal mensuel en ajout seul (`metriques-AAAA-MM.jsonl`).
+  Des tokens, **jamais des euros** : la facturation reste chez le fournisseur, seul
+  à connaître ses prix. Un montant calculé ici ne serait qu'une hypothèse.
 - **Plafond mensuel** — vérifié **avant** l'appel au fournisseur, refus en `429`
-  `plafond_atteint`, alerte à 80 %. Désactivé par défaut.
+  `plafond_atteint`, alerte à 80 %. Désactivé par défaut. Le refus dit combien a
+  été consommé, sur combien, et quand le quota repart.
+- **Port occupé** — si 3100 est pris, la passerelle bascule sur 3101, 3102… et
+  retient le port choisi. Une bulle Windows prévient, et l'adresse est rappelée
+  dans la fenêtre pour ne pas laisser un client pointer dans le vide.
+- **Fournisseurs locaux** — option décochée par défaut pour autoriser le `http://`
+  non chiffré vers une adresse privée (réseau local, Tailscale). Jamais vers
+  Internet : sans chiffrement, la clé circulerait en clair.
 - **Interface FR / EN**, infobulles, démarrage avec Windows, icône de notification
   qui change de couleur selon l'état réel.
-- **Rien ne sort** — le service n'écoute que sur la boucle locale.
+- **Rien ne sort** — le service n'écoute que sur la boucle locale. Le seul appel
+  sortant est la vérification de version, facultative, sans jeton et sans donnée
+  envoyée.
 
 ---
 
