@@ -1,5 +1,7 @@
 # PROTOCOLE DE TEST — ApiVault Proxy
 
+[Français](PROTOCOLE-TEST.md) | [English](PROTOCOLE-TEST.en.md)
+
 **Objet** : vérifier le comportement réel de l'application, du point de vue de l'utilisateur.
 Pas de relecture de code, pas d'opinion : des faits, des preuves, des OK/KO.
 

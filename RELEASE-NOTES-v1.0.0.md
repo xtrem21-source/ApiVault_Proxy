@@ -1,5 +1,7 @@
 # ApiVault Proxy 1.0.0 — 19 octobre 2026
 
+[Français](RELEASE-NOTES-v1.0.0.md) | [English](RELEASE-NOTES-v1.0.0.en.md)
+
 Première version publique. Ce n'est pas une préversion : le coffre, le pool, le
 compteur et le plafond sont livrés, audités et recettés.
 

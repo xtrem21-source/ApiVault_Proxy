@@ -1,5 +1,7 @@
 # Guide des captures — ApiVault Proxy
 
+[Français](LISEZ-MOI.md) | [English](LISEZ-MOI.en.md)
+
 Quatre captures suffisent pour la page GitHub — elles sont déjà référencées dans le
 `README.md`. Deux autres sont proposées en bonus : si tu les ajoutes, je les insère
 dans la galerie.

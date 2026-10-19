@@ -1,0 +1,21 @@
+ApiVault_Proxy
+==============
+
+[Français : LISEZ-MOI.txt](LISEZ-MOI.txt) | **English**
+
+Standalone local gateway, OpenAI-compatible.
+Listens only on 127.0.0.1 and requires a token.
+
+Proxy-Externe/     the gateway (Rust) and its control UI (Tauri).
+                   http://127.0.0.1:3100/v1
+
+Commands
+--------
+Proxy-Externe\Demarrer.bat            starts the gateway
+Proxy-Externe\Etat.bat                checks the service, token and aliases
+Proxy-Externe\Arreter.bat             stops the gateway
+Proxy-Externe\Autostart-Activer.bat   automatic start (silent mode)
+Proxy-Externe\Autostart-Desactiver.bat
+
+The product specification is in SPECIFICATION.en.md.
+Project details are in Proxy-Externe/LISEZ-MOI.en.txt.

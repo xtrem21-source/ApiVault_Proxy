@@ -1,5 +1,7 @@
 # ETAT-REEL — ApiVault_Proxy
 
+[Français](ETAT-REEL.md) | [English](ETAT-REEL.en.md)
+
 Document de référence factuel : ce qui existe vraiment dans le dépôt, à la date
 du 19/10/2026, après les lots 4 à 7 bis et la recette interne.
 

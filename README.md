@@ -1,5 +1,7 @@
 # ApiVault Proxy
 
+[Français](README.md) | [English](README.en.md)
+
 **Une passerelle locale, compatible OpenAI, qui garde tes clés d'API sur ta machine.**
 
 ApiVault Proxy tourne en arrière-plan sur Windows, écoute uniquement sur

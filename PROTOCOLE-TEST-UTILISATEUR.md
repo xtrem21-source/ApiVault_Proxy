@@ -1,5 +1,7 @@
 # Protocole de test — ApiVault Proxy
 
+[Français](PROTOCOLE-TEST-UTILISATEUR.md) | [English](PROTOCOLE-TEST-UTILISATEUR.en.md)
+
 Document à suivre **par vous**, à votre rythme. Il se découpe en trois séances possibles.
 Chaque étape porte un numéro : dans vos notes, écrivez simplement « étape 12 : OK » ou « étape 12 : la fenêtre affiche X ».
 
