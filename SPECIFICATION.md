@@ -1,7 +1,7 @@
 # ApiVault_Proxy — Spécification
 
 Version du document : 0.1 — 17/10/2026
-Statut : à valider avant la première ligne de code.
+Statut : document d'intention (17/10/2026). L'implémentation a divergé sur deux points : le coffre utilise DPAPI et non PBKDF2/AES, et l'audio n'est pas implémenté. Voir ETAT-REEL.md.
 
 ---
 

@@ -12,3 +12,10 @@ ApiVault_Proxy-V2/
 
 # Dossiers d'audit et de sauvegarde (jamais versionnes)
 _AUDIT/
+
+# Archives de publication (produites localement, jamais versionnees)
+dist/
+*.zip
+
+# Notes de publication locales
+PUBLICATION.md

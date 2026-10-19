@@ -1,11 +1,11 @@
 # ETAT-REEL — ApiVault_Proxy
 
 Document de référence factuel : ce qui existe vraiment dans le dépôt, à la date
-du 18/10/2026, après le sprint 0 d'assainissement.
+du 19/10/2026, après les lots 4 à 7 bis et la recette interne.
 
 ## Version
 
-- Version applicative : **0.5.0** (`Cargo.toml`, `tauri.conf.json`, en-tête `/health`).
+- Version applicative : **1.0.0** (`Cargo.toml`, `tauri.conf.json`, en-tête `/health`).
 - Binaire : `Proxy-Externe/src-tauri/target/release/apivault-proxy.exe`.
 - Crate : `apivault-proxy` (nom technique), produit : `ApiVault_Proxy`.
 - Édition Rust : 2021.
