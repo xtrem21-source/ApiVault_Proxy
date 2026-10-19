@@ -1,7 +1,7 @@
 ApiVault_Proxy - version 1.0.0
 ==============================
 
-[Français : LISEZ-MOI.txt](LISEZ-MOI.txt) | **English**
+[Français](LISEZ-MOI.txt) | **English**
 
 Local OpenAI-compatible gateway.
 One standalone executable: no Python, no Docker, no Node.
@@ -163,7 +163,7 @@ Changer-Cle.bat            replaces an API key and restarts
 Arreter.bat                stops the gateway
 Autostart-Activer.bat      automatic start at sign-in
 Autostart-Desactiver.bat   removes that automatic start
-LISEZ-MOI.en.txt           this file (English version)
+README.en.txt              this file (English version)
 outils\                    PowerShell scripts called by the .bat files
 outils\commun.ps1          shared functions (executable, vault, token)
 cles.env                   local API keys, encrypted (do not share)

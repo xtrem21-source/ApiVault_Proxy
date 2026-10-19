@@ -1,7 +1,7 @@
 ApiVault_Proxy - version 1.0.0
 ==============================
 
-English version: LISEZ-MOI.en.txt
+English version: README.en.txt
 
 Passerelle locale compatible OpenAI.
 Un seul executable autonome : ni Python, ni Docker, ni Node.

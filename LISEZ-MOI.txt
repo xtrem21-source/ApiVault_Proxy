@@ -1,7 +1,7 @@
 ApiVault_Proxy
 ==============
 
-English version: LISEZ-MOI.en.txt
+English version: README.en.txt
 
 Passerelle locale autonome, compatible OpenAI.
 Ecoute uniquement sur 127.0.0.1 et exige un jeton.

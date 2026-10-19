@@ -1,7 +1,7 @@
 ApiVault_Proxy
 ==============
 
-[Français : LISEZ-MOI.txt](LISEZ-MOI.txt) | **English**
+[Français](LISEZ-MOI.txt) | **English**
 
 Standalone local gateway, OpenAI-compatible.
 Listens only on 127.0.0.1 and requires a token.
@@ -18,4 +18,4 @@ Proxy-Externe\Autostart-Activer.bat   automatic start (silent mode)
 Proxy-Externe\Autostart-Desactiver.bat
 
 The product specification is in SPECIFICATION.en.md.
-Project details are in Proxy-Externe/LISEZ-MOI.en.txt.
+Project details are in Proxy-Externe/README.en.txt.

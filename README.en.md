@@ -32,7 +32,7 @@ No Docker, no Python, no Node, no system service. One executable.
 | **Badges** — free / paid, default model | **States** — reachable, waiting, down |
 
 > Screenshots live in [`docs/captures/`](docs/captures/). See the
-> [screenshot guide](docs/captures/LISEZ-MOI.en.md).
+> [screenshot guide](docs/captures/README.en.md).
 
 ---
 
