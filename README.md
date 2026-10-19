@@ -150,14 +150,17 @@ cd Proxy-Externe\src-tauri
 cargo test
 ```
 
-**88 tests** : 30 unitaires, 9 d'intégration, plus les suites de sécurité et de
-fonctionnalités (`lot3` à `lot7`). Aucun ne touche à une vraie clé : les tests
-utilisent des valeurs factices et des faux fournisseurs locaux.
+**88 tests** : 30 unitaires et 58 d'intégration. Aucun ne touche à une vraie clé :
+les tests utilisent des valeurs factices et des faux fournisseurs locaux.
 
-La recette d'exécution sur le binaire réel (bac à sable `APPDATA`, faux
-fournisseur local) est décrite dans
-[`PROTOCOLE-TEST-UTILISATEUR.md`](PROTOCOLE-TEST-UTILISATEUR.md) — 42 étapes,
-rejouables par n'importe qui.
+Où trouver quoi :
+
+| Document | Contenu |
+|---|---|
+| [`docs/tests/INVENTAIRE.md`](docs/tests/INVENTAIRE.md) | les 88 tests, quel test prouve quoi, et ce que rien ne couvre |
+| [`docs/tests/RECETTE-INTERNE.md`](docs/tests/RECETTE-INTERNE.md) | 9 contrôles sur le binaire réel, bac à sable et faux fournisseur |
+| [`PROTOCOLE-TEST-UTILISATEUR.md`](PROTOCOLE-TEST-UTILISATEUR.md) | la recette pas à pas, 42 étapes, rejouable par n'importe qui |
+| [`PROTOCOLE-TEST.md`](PROTOCOLE-TEST.md) | la charte d'un audit externe, méthode J0 à J6 |
 
 ---
 

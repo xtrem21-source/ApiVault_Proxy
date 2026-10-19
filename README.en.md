@@ -148,14 +148,17 @@ cd Proxy-Externe\src-tauri
 cargo test
 ```
 
-**88 tests**: 30 unit, 9 integration, plus the security and feature suites
-(`lot3` to `lot7`). None touches a real key: tests use fake values and local fake
-providers.
+**88 tests**: 30 unit and 58 integration. None touches a real key: tests use fake
+values and local fake providers.
 
-The execution recipe against the real binary (sandboxed `APPDATA`, local fake
-provider) is described in
-[`PROTOCOLE-TEST-UTILISATEUR.en.md`](PROTOCOLE-TEST-UTILISATEUR.en.md) — 42 steps,
-reproducible by anyone.
+Where to find what:
+
+| Document | Content |
+|---|---|
+| [`docs/tests/INVENTAIRE.en.md`](docs/tests/INVENTAIRE.en.md) | the 88 tests, which test proves what, and what nothing covers |
+| [`docs/tests/RECETTE-INTERNE.en.md`](docs/tests/RECETTE-INTERNE.en.md) | 9 checks on the real binary, sandbox and fake provider |
+| [`PROTOCOLE-TEST-UTILISATEUR.en.md`](PROTOCOLE-TEST-UTILISATEUR.en.md) | the step-by-step recipe, 42 steps, reproducible by anyone |
+| [`PROTOCOLE-TEST.en.md`](PROTOCOLE-TEST.en.md) | the charter of an external audit, J0 to J6 method |
 
 ---
 
