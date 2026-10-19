@@ -35,13 +35,15 @@ Corrective distribution release. No business API change.
 ## Verification
 
 - 88 tests, 0 failures.
-- Archive: `apivault-proxy-1.0.3-win64.zip` — **3,451,206 bytes**.
+- Archive: `apivault-proxy-1.0.3-win64.zip` — **3,559,537 bytes**.
 
 ## Checksums
 
 ```
-SHA-256  apivault-proxy-1.0.3-win64.zip   AA84BC7D43D9567A0C45733294F089896F764E6C69E6B2B783F1DADDDDA07E21
+SHA-256  apivault-proxy-1.0.3-win64.zip   95489ABDFB95A61E875738F5F1E2F0B8A729E6CEEF96C45268E58636EA274F0A
 ```
 
-The binary still contains one occurrence of the build path
-(`C:\Users\Xtrem-21`); it is explicitly accepted for this release.
+The binary is built from a neutral copy with `--remap-path-prefix`: it no longer
+contains the personal build path. One neutral string remains,
+`C:\build\ApiVault_Proxy\...`, written by Tauri (`CARGO_MANIFEST_DIR`); it
+reveals no user name.

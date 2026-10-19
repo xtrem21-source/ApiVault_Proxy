@@ -36,13 +36,15 @@ Version corrective de distribution. Aucun changement de l'API métier.
 ## Vérifications
 
 - 88 tests, 0 échec.
-- Archive : `apivault-proxy-1.0.3-win64.zip` — **3 451 206 octets**.
+- Archive : `apivault-proxy-1.0.3-win64.zip` — **3 559 537 octets**.
 
 ## Empreintes
 
 ```
-SHA-256  apivault-proxy-1.0.3-win64.zip   AA84BC7D43D9567A0C45733294F089896F764E6C69E6B2B783F1DADDDDA07E21
+SHA-256  apivault-proxy-1.0.3-win64.zip   95489ABDFB95A61E875738F5F1E2F0B8A729E6CEEF96C45268E58636EA274F0A
 ```
 
-Le binaire contient encore une occurrence du chemin de compilation
-(`C:\Users\Xtrem-21`) ; elle est acceptée explicitement pour cette release.
+Le binaire est compilé depuis une copie neutre, avec `--remap-path-prefix` : il
+ne contient plus aucune occurrence du chemin de compilation personnel. Il reste
+une seule chaîne neutre, `C:\build\ApiVault_Proxy\...`, inscrite par Tauri
+(`CARGO_MANIFEST_DIR`), qui ne révèle aucun nom d'utilisateur.
